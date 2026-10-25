@@ -22,6 +22,12 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+# One source for the language pool's parallelism: llama.cpp splits -c across -np slots, granited
+# admits max_concurrency requests, and each slot must hold context_tokens. Change these together.
+LANGUAGE_SLOTS = 2
+SLOT_CONTEXT = 8192
+
+
 def write(path, value):
     Path(path).write_text(json.dumps(value, indent=2) + '\n')
 
@@ -82,9 +88,9 @@ def main():
                 prefetch_command=[shutil.which('hf') or str(ROOT / '.venv-native/bin/hf'), 'download', info['id'],
                                   '--revision', info['sha'], '--local-dir', str(weights)],
                 memory_bytes=budget, device='unified', health_path='/health', identity_path='/v1/models',
-                runtime_manifest=str(Path(args.omlx).resolve()), backend_build=f'omlx-{version}', context_tokens=8192,
+                runtime_manifest=str(Path(args.omlx).resolve()), backend_build=f'omlx-{version}', context_tokens=SLOT_CONTEXT,
                 artifacts={str(weights / f['path']): sha256_file(weights / f['path']) for f in info['files']},
-                load_timeout_seconds=300, max_concurrency=2, keep_warm=False))
+                load_timeout_seconds=300, max_concurrency=LANGUAGE_SLOTS, keep_warm=False))
     elif sizes and (args.host == 'mac' or args.llama_runtime):
         llama = str(Path(args.llama_runtime).resolve()) if args.llama_runtime else shutil.which('llama-server')
         if not llama:
@@ -116,7 +122,7 @@ def main():
         preset = ROOT / f'configs/{profile}-models.ini'
         preset.write_text('\n'.join(f'[granite-4.2-{size}]\nmodel = {models_dir}/granite-4.2-{size}-Q4_K_M.gguf\n' for size in sizes))
         command = [llama, '--models-preset', str(preset), '--models-max', '1', '--no-models-autoload',
-                   '--host', '127.0.0.1', '--port', str(args.port + 11), '-c', '16384', '-np', '2', '-ngl', '0' if device == 'cpu' else '99',
+                   '--host', '127.0.0.1', '--port', str(args.port + 11), '-c', str(LANGUAGE_SLOTS * SLOT_CONTEXT), '-np', str(LANGUAGE_SLOTS), '-ngl', '0' if device == 'cpu' else '99',
                    '--jinja', '--reasoning-format', 'deepseek', '--metrics']
         if backend_device:
             command += ['--device', backend_device]
@@ -130,10 +136,10 @@ def main():
                 prefetch_command=[shutil.which('hf') or str(ROOT / '.venv-native/bin/hf'), 'download', info['id'], name, '--revision', info['sha'], '--local-dir', str(models_dir)],
                 memory_bytes=budget, device='cpu' if device == 'cpu' else 'unified', health_path='/health', identity_path='/v1/models',
                 runtime_manifest=str(manifest), backend_build=build,
-                context_tokens=8192,
+                context_tokens=SLOT_CONTEXT,
                 pid_registry=args.pid_registry,
                 artifacts={str(models_dir / name): file['lfs']['sha256'], **runtime_files},
-                load_timeout_seconds=300, max_concurrency=2, keep_warm=False))
+                load_timeout_seconds=300, max_concurrency=LANGUAGE_SLOTS, keep_warm=False))
     if args.native:
         python = ROOT / '.venv-native/bin/python'
         packages = subprocess.check_output([str(python), '-c',
