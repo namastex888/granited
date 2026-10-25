@@ -10,7 +10,9 @@ from pathlib import Path
 import platform
 import random
 import statistics
+import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -132,9 +134,80 @@ def request(base, record, timeout, token):
     return result, time.perf_counter() - start, first
 
 
+class Sampler:
+    """Polls granited's /internal/hardware while requests run: free RAM, swap, memory stall,
+    accelerator memory and each managed worker's resident memory (via ps, so the benchmark must run
+    on the measured host). Sets `alarm` when the host is under memory pressure so the run stops."""
+
+    def __init__(self, url, token, interval, max_stall):
+        self.url, self.token, self.interval, self.max_stall = url.rstrip('/'), token, interval, max_stall
+        self.samples, self.alarm, self._stop = [], None, threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def _read(self):
+        req = urllib.request.Request(self.url + '/internal/hardware', headers={'Authorization': 'Bearer ' + (self.token or '')})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            hw = json.load(r)
+        rss = {}
+        for w in hw.get('managed_workers', []):
+            if w.get('pid'):
+                out = subprocess.run(['ps', '-o', 'rss=', '-p', str(w['pid'])], capture_output=True, text=True).stdout.strip()
+                if out.isdigit():
+                    rss[w['model']] = int(out) * 1024
+        accel = sum(v for a in hw.get('accelerators', []) for k, v in a.items()
+                    if isinstance(v, (int, float)) and 'used' in k and 'bytes' in k)
+        return dict(t=time.time(), ram_available_bytes=(hw.get('ram') or {}).get('available_bytes'),
+                    swap_used_bytes=(hw.get('ram') or {}).get('swap_used_bytes'),
+                    memory_stall_percent=hw.get('memory_stall_percent'), accelerator_used_bytes=accel or None,
+                    worker_rss_bytes=rss, active={w['model']: w.get('active_requests') for w in hw.get('managed_workers', [])})
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                sample = self._read()
+                self.samples.append(sample)
+                if (sample['memory_stall_percent'] or 0) > self.max_stall:
+                    self.alarm = f'memory stall {sample["memory_stall_percent"]:.1f}% > {self.max_stall}%'
+            except Exception as error:  # a missed sample is recorded, never guessed
+                self.samples.append(dict(t=time.time(), error=f'{type(error).__name__}: {error}'))
+            self._stop.wait(self.interval)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join(timeout=15)
+
+    def summary(self):
+        good = [s for s in self.samples if 'error' not in s]
+        peak = {}
+        for s in good:
+            for model, value in s['worker_rss_bytes'].items():
+                peak[model] = max(peak.get(model, 0), value)
+        pick = lambda key, f: f([s[key] for s in good if s.get(key) is not None]) if any(s.get(key) is not None for s in good) else None
+        return dict(samples=len(good), failed_samples=len(self.samples) - len(good), interval_s=self.interval,
+                    min_ram_available_bytes=pick('ram_available_bytes', min), max_swap_used_bytes=pick('swap_used_bytes', max),
+                    max_memory_stall_percent=pick('memory_stall_percent', max),
+                    max_accelerator_used_bytes=pick('accelerator_used_bytes', max), peak_worker_rss_bytes=peak, alarm=self.alarm)
+
+
 def percentile(values, q):
     ordered = sorted(values)
     return ordered[max(0, math.ceil(q * len(ordered)) - 1)] if ordered else None
+
+
+def error_codes(results):
+    counts = {}
+    for r in results:
+        if r['status'] == 'ok':
+            continue
+        detail = r.get('error')
+        code = detail.get('error', {}).get('code') if isinstance(detail, dict) else None
+        key = f'{r.get("http_status", r["status"])} {code or ""}'.strip()
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def mean_ci(values):
@@ -160,6 +233,11 @@ def main():
     parser.add_argument('--typed-prefix', default='')
     parser.add_argument('--dataset-manifest')
     parser.add_argument('--hardware-file')
+    parser.add_argument('--sample-url', help='granited base URL to sample /internal/hardware from during the run')
+    parser.add_argument('--sample-token-env', default='BENCH_ADMIN_KEY')
+    parser.add_argument('--sample-interval', type=float, default=0.5)
+    parser.add_argument('--max-memory-stall', type=float, default=5.0,
+                        help='stop sending requests when the sampled memory stall passes this percentage')
     args = parser.parse_args()
     if args.repeat < 1 or args.concurrency < 1 or args.warmup < 0:
         parser.error('repeat/concurrency must be positive and warmup nonnegative')
@@ -177,7 +255,13 @@ def main():
             record['path'] = args.typed_prefix.rstrip('/') + '/' + record['path'].lstrip('/')
     token = os.environ.get(args.token_env)
 
+    sampler = Sampler(args.sample_url, os.environ.get(args.sample_token_env), args.sample_interval,
+                      args.max_memory_stall) if args.sample_url else None
+
     def run(record, repetition):
+        if sampler and sampler.alarm:
+            return {'id': record['id'], 'family': record['family'], 'stage': args.stage, 'repetition': repetition,
+                    'status': 'skipped', 'error': f'stopped: {sampler.alarm}'}
         result = {'id': record['id'], 'family': record['family'], 'stage': args.stage, 'repetition': repetition,
                   'kind': args.kind, 'profile': record.get('profile'), 'model': record['request'].get('model')}
         try:
@@ -210,6 +294,8 @@ def main():
     raw_path = Path(args.output).with_suffix('.requests.jsonl')
     results = []
     started = time.perf_counter()
+    if sampler:
+        sampler.__enter__()
     with raw_path.open('w') as raw, ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         jobs = [pool.submit(run, record, i) for record in records for i in range(args.repeat)]
         for job in as_completed(jobs):
@@ -218,6 +304,8 @@ def main():
             raw.write(json.dumps(result, ensure_ascii=False) + '\n')
             raw.flush()
     wall = time.perf_counter() - started
+    if sampler:
+        sampler.__exit__(None, None, None)
     successful = [r for r in results if r['status'] == 'ok']
     latencies = [r['latency_s'] for r in successful]
     summary = dict(total=len(results), successful=len(successful), failed=len(results) - len(successful),
@@ -225,7 +313,8 @@ def main():
                    throughput_kind='achieved at configured concurrency; not a saturation claim',
                    latency_p50_s=percentile(latencies, .5), latency_p95_s=percentile(latencies, .95),
                    latency_p99_s=percentile(latencies, .99), mean_latency_95ci_s=mean_ci(latencies),
-                   model_accuracy=None if args.kind == 'smoke' else 'see per-request quality_metrics')
+                   model_accuracy=None if args.kind == 'smoke' else 'see per-request quality_metrics',
+                   errors_by_code=error_codes(results), memory=sampler.summary() if sampler else None)
     output = dict(schema_version=2, kind=args.kind, stage=args.stage, timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   platform=platform.platform(), python=sys.version, hostname=platform.node(), base_url=args.base_url,
                   fixture=str(fixture), fixture_sha256=hashlib.sha256(fixture.read_bytes()).hexdigest(), dataset_manifest=manifest,

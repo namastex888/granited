@@ -577,13 +577,24 @@ def spawn(name, command):
     return child.pid
 
 
+def owns(current, command):
+    """Whether a running command line is the process we started, so a reused PID (another
+    checkout's granited, say) is never signalled. Tunnels run their saved argv; run_service execs
+    `granited serve` in place, so match this checkout's path and the profile it was given."""
+    if not current:
+        return False
+    if all(str(c) in current for c in command[1:]):
+        return True
+    profiles = [Path(str(c)).name for c in command if str(c).endswith('.json')]
+    return str(ROOT) in current and bool(profiles) and all(p in current for p in profiles)
+
+
 def stop(name):
     saved = load_json(STATE / f'{name}.process.json')
     if not saved:
         return
     current = sh('ps', '-p', saved['pid'], '-o', 'command=', check=False, capture=True) or ''
-    # Signal only a process that still runs what we started (run_service execs granited in place).
-    if current and any(Path(c).name in current for c in saved['command'][:3]) or 'granited' in current:
+    if owns(current, saved['command']):
         os.kill(saved['pid'], 15)
         for _ in range(120):
             if not (sh('ps', '-p', saved['pid'], '-o', 'stat=', check=False, capture=True) or '').strip():
@@ -679,7 +690,23 @@ def service(args):
         raise SystemExit('no local installation record')
     if args.action == 'logs':
         return sh('tail', '-n', '80', STATE / f'{record["instance"]}.log')
-    service_action(record['instance'], args.action)
+    if record.get('service'):
+        return service_action(record['instance'], args.action)
+    # Installed with --no-service: a detached process with a recorded PID, no launchd/systemd unit.
+    name = record['instance']
+    saved = load_json(STATE / f'{name}.process.json')
+    if not saved:
+        raise SystemExit(f'no process record for {name}')
+    running = owns(sh('ps', '-p', saved['pid'], '-o', 'command=', check=False, capture=True) or '', saved['command'])
+    if args.action == 'status':
+        print(f'{name}: {"running, pid " + str(saved["pid"]) if running else "stopped"} (no login service)')
+    elif args.action == 'stop':
+        stop(name)
+    elif args.action == 'start':
+        if not running:
+            spawn(name, saved['command'])
+    else:
+        restart(record)
 
 
 def main():
