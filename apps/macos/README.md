@@ -19,7 +19,7 @@ The menu is a standard macOS menu. It contains:
 - a status line, for example `Running · 2 models ready · 1 request`, followed by any attention reasons
 - one line per host from `/internal/hosts`, marked reachable or unreachable, with its round-trip time
 - **Start Engine**, **Stop Engine** and **Restart Engine**
-- **Preferences…** (⌘,)
+- **Settings…** (⌘,), also in the GraniteBar app menu while the window is open
 - **Quit GraniteBar** (⌘Q)
 
 **Polling:**

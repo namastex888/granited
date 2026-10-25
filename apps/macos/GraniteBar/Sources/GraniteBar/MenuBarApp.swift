@@ -22,9 +22,17 @@ struct GraniteBarApp: App {
             MenuContent(state: state)
         } label: {
             Image(nsImage: StatusIcon.image(for: state.glance))
-                .accessibilityLabel("granited: \(state.statusLine)")
+                .accessibilityLabel((["granited: \(state.statusLine)"] + state.attentionReasons).joined(separator: "; "))
         }
         .menuBarExtraStyle(.menu)
+        .commands {
+            // While Settings is open the app is a regular app with a menu bar; give it the
+            // standard GraniteBar > Settings… (⌘,) item every Mac app has.
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { PreferencesController.shared.show() }
+                    .keyboardShortcut(",")
+            }
+        }
     }
 }
 
@@ -110,7 +118,7 @@ struct MenuContent: View {
         }
 
         Divider()
-        Button("Preferences…") { PreferencesController.shared.show() }
+        Button("Settings…") { PreferencesController.shared.show() }
             .keyboardShortcut(",")
         Divider()
         Button("Quit GraniteBar") { NSApp.terminate(nil) }

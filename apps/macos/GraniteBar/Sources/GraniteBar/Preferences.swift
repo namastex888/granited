@@ -100,8 +100,9 @@ struct PreferencesView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $navigation.selection) {
+                // Display only: a second row tagged .general would give the list two rows for one
+                // selection value, and SwiftUI then shows whichever pane it likes.
                 EngineSidebarCard(state: state)
-                    .tag(Pane.general)
                     .listRowSeparator(.hidden)
                 Section {
                     ForEach(Pane.allCases) { pane in

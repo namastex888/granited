@@ -100,7 +100,7 @@ struct WorkerSection: View {
 
     var body: some View {
         Section {
-            LabeledContent("Family", value: state.family(of: worker.model)?.capitalized ?? "—")
+            LabeledContent("Family", value: state.family(of: worker.model).map { $0.replacingOccurrences(of: "_", with: " ").capitalized } ?? "—")
             LabeledContent("Device", value: [worker.device?.uppercased(), worker.backend].compactMap { $0 }.joined(separator: " · "))
             LabeledContent("State") { StatusText(text: stateLabel, color: stateColor) }
             LabeledContent("Requests", value: "\(worker.active_requests ?? 0) of \(worker.max_concurrency.map(String.init) ?? "—")")
