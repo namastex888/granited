@@ -73,7 +73,7 @@ granited does not pool memory across machines into one big GPU. Each model runs 
 | `GET /admin/models`, `POST /admin/models/{id}/load\|unload\|prefetch` | Lifecycle (admin key) |
 | `GET /internal/hosts`, `/internal/metrics`, `/internal/hardware` | Cluster and hardware state (admin key) |
 
-Every response carries a request ID, the model revision, the serving host and backend build, and `server-timing` for admission and upstream time; GGUF responses add the file's SHA-256. Errors are structured (`unknown_model`, `admission_busy`, `insufficient_memory`, `memory_pressure`, …) and busy or unavailable responses include `Retry-After`.
+Every response carries a request ID, the model revision, the serving host and backend build, and `server-timing` for admission and upstream time; GGUF responses add the file's SHA-256. Errors are structured (`unknown_model`, `admission_busy`, `insufficient_memory`, `memory_pressure`, …) and busy or unavailable responses include `Retry-After` (2 s when every slot is full, 30 s for loads and outages) plus `x-granite-error-code`.
 
 ## How memory stays safe
 

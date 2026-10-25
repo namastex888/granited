@@ -42,9 +42,17 @@ impl IntoResponse for Failure {
         )
             .into_response();
         if status == StatusCode::SERVICE_UNAVAILABLE || status == StatusCode::TOO_MANY_REQUESTS {
+            // A full slot frees within seconds; loads, memory and outages take longer.
+            let wait = match self.code.as_str() {
+                "admission_busy" | "capacity_unavailable" => "2",
+                _ => "30",
+            };
             response
                 .headers_mut()
-                .insert("retry-after", HeaderValue::from_static("30"));
+                .insert("retry-after", HeaderValue::from_static(wait));
+        }
+        if let Ok(code) = HeaderValue::from_str(&self.code) {
+            response.headers_mut().insert("x-granite-error-code", code);
         }
         response
     }
@@ -215,7 +223,8 @@ async fn hosts(State(s): State<Arc<Service>>) -> Json<Value> {
 }
 async fn metrics(State(s): State<Arc<Service>>) -> Json<Value> {
     Json(
-        json!({"uptime_seconds":s.started.elapsed().as_secs(),"workers":s.worker_status(),"operations":s.operations.lock().unwrap().values().cloned().collect::<Vec<_>>()}),
+        json!({"uptime_seconds":s.started.elapsed().as_secs(),"workers":s.worker_status(),"operations":s.operations.lock().unwrap().values().cloned().collect::<Vec<_>>(),
+            "rejections":*s.rejections.lock().unwrap()}),
     )
 }
 async fn model_operation(
@@ -433,96 +442,127 @@ async fn dispatch(
     if path == "/v1/systemone" {
         value["cache_prompt"] = json!(false);
     }
-    let placement = match s.placement(&id, capability, thread == "background").await {
-        Ok(peer) => peer,
-        Err(e) => return e.into_response(),
+    let candidates = match s.placement(&id, capability, thread == "background").await {
+        Ok(candidates) => candidates,
+        Err(e) => {
+            s.count_rejection(&id, &e.code);
+            return e.into_response();
+        }
     };
-    let local = placement.is_none();
-    let (url, token, lease, revision, backend) = if local && let Some(worker) = s.workers.get(&id) {
-        let lease = match s.lease(&id, thread == "background").await {
-            Ok(l) => l,
-            Err(e) => {
-                return model_headers(
-                    e.into_response(),
-                    &worker.spec.revision,
-                    &worker.spec.backend,
-                );
-            }
-        };
-        if let Some(alias) = &worker.spec.backend_model {
-            value["model"] = json!(alias);
-        }
-        (
-            worker.spec.base_url.clone(),
-            None,
-            Some(lease),
-            worker.spec.revision.clone(),
-            worker.spec.backend.clone(),
-        )
-    } else if let Some(peer) = placement {
-        let hop = headers
-            .get("x-granite-hop")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-        if hop >= 2 {
-            return failure("routing_loop", "Peer hop limit reached").into_response();
-        }
-        (
-            peer.url.clone(),
-            Some((std::env::var(&peer.token_env).unwrap_or_default(), hop + 1)),
-            None,
-            model.hf_revision.clone().unwrap_or_default(),
-            format!("peer:{}", peer.id),
-        )
-    } else {
-        return failure("model_unavailable",format!("{} is discoverable; no validated native worker configured. See /admin/models for incompatibilities.",model.id)).into_response();
-    };
-    let admission = start.elapsed();
-    let mut forward_path = path;
-    let normalize_vision = path == "/v1/vision/extract" && lease.is_some() && backend == "vllm";
-    if normalize_vision {
-        let mime = value["mime_type"].as_str().unwrap_or("");
-        if !matches!(mime, "image/png" | "image/jpeg" | "image/webp") {
-            return failure(
-                "invalid_schema",
-                "mime_type must be image/png, image/jpeg or image/webp",
-            )
-            .into_response();
-        }
-        let image = value["image_base64"].as_str().unwrap_or("");
-        if base64::engine::general_purpose::STANDARD
-            .decode(image)
-            .is_err()
+    let attempts = candidates.len();
+    let mut outcome = None;
+    for (attempt, placement) in candidates.into_iter().enumerate() {
+        // Placement reads snapshots up to 2 s old; a host that filled up meanwhile refuses before
+        // running anything, so the next-ranked host may take the request.
+        let fallback = attempt + 1 < attempts;
+        let local = placement.is_none();
+        let (url, token, lease, revision, backend) = if local
+            && let Some(worker) = s.workers.get(&id)
         {
-            return failure("invalid_schema", "image_base64 is invalid").into_response();
-        }
-        value = json!({"model":value["model"],"messages":[{"role":"user","content":[
-            {"type":"text","text":value["prompt"]},{"type":"image_url","image_url":{"url":format!("data:{mime};base64,{image}")}}
-        ]}],"max_tokens":value["max_tokens"].as_u64().unwrap_or(1024),"temperature":0,"stream":false});
-        forward_path = "/v1/chat/completions";
-    }
-    let mut request = s
-        .client
-        .post(format!("{url}{forward_path}"))
-        .json(&value)
-        .header("x-granite-request-id", request_id)
-        .header("x-granite-thread", thread)
-        .timeout(Duration::from_secs(600));
-    if let Some((token, hop)) = token {
-        request = request.bearer_auth(token).header("x-granite-hop", hop);
-    }
-    let response = match request.send().await {
-        Ok(upstream) if normalize_vision && upstream.status().is_success() => {
-            let parsed = upstream.json::<Value>().await;
-            drop(lease);
-            match parsed {
-                Ok(output)=>Json(json!({"text":output["choices"][0]["message"]["content"],"usage":output["usage"],"model":id,"revision":revision,"structural_quality":null})).into_response(),
-                Err(e)=>failure("backend_error",e.to_string()).into_response(),
+            let lease = match s.lease(&id, thread == "background").await {
+                Ok(l) => l,
+                Err(e) => {
+                    s.count_rejection(&id, &e.code);
+                    if e.code == "admission_busy" && fallback {
+                        continue;
+                    }
+                    return model_headers(
+                        e.into_response(),
+                        &worker.spec.revision,
+                        &worker.spec.backend,
+                    );
+                }
+            };
+            if let Some(alias) = &worker.spec.backend_model {
+                value["model"] = json!(alias);
             }
+            (
+                worker.spec.base_url.clone(),
+                None,
+                Some(lease),
+                worker.spec.revision.clone(),
+                worker.spec.backend.clone(),
+            )
+        } else if let Some(peer) = placement {
+            let hop = headers
+                .get("x-granite-hop")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            if hop >= 2 {
+                return failure("routing_loop", "Peer hop limit reached").into_response();
+            }
+            (
+                peer.url.clone(),
+                Some((std::env::var(&peer.token_env).unwrap_or_default(), hop + 1)),
+                None,
+                model.hf_revision.clone().unwrap_or_default(),
+                format!("peer:{}", peer.id),
+            )
+        } else {
+            return failure("model_unavailable",format!("{} is discoverable; no validated native worker configured. See /admin/models for incompatibilities.",model.id)).into_response();
+        };
+        let admission = start.elapsed();
+        let mut forward_path = path;
+        let normalize_vision = path == "/v1/vision/extract" && lease.is_some() && backend == "vllm";
+        if normalize_vision {
+            let mime = value["mime_type"].as_str().unwrap_or("");
+            if !matches!(mime, "image/png" | "image/jpeg" | "image/webp") {
+                return failure(
+                    "invalid_schema",
+                    "mime_type must be image/png, image/jpeg or image/webp",
+                )
+                .into_response();
+            }
+            let image = value["image_base64"].as_str().unwrap_or("");
+            if base64::engine::general_purpose::STANDARD
+                .decode(image)
+                .is_err()
+            {
+                return failure("invalid_schema", "image_base64 is invalid").into_response();
+            }
+            value = json!({"model":value["model"],"messages":[{"role":"user","content":[
+                {"type":"text","text":value["prompt"]},{"type":"image_url","image_url":{"url":format!("data:{mime};base64,{image}")}}
+            ]}],"max_tokens":value["max_tokens"].as_u64().unwrap_or(1024),"temperature":0,"stream":false});
+            forward_path = "/v1/chat/completions";
         }
-        Ok(upstream) => forward_response(upstream, lease).await,
-        Err(e) => failure("backend_unreachable", e.to_string()).into_response(),
+        let mut request = s
+            .client
+            .post(format!("{url}{forward_path}"))
+            .json(&value)
+            .header("x-granite-request-id", request_id)
+            .header("x-granite-thread", thread)
+            .timeout(Duration::from_secs(600));
+        if let Some((token, hop)) = token {
+            request = request.bearer_auth(token).header("x-granite-hop", hop);
+        }
+        let response = match request.send().await {
+            Ok(upstream) if !local && fallback && refused_before_running(&upstream) => {
+                let code = upstream
+                    .headers()
+                    .get("x-granite-error-code")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("admission_busy");
+                s.count_rejection(&id, code);
+                continue;
+            }
+            Ok(upstream) if normalize_vision && upstream.status().is_success() => {
+                let parsed = upstream.json::<Value>().await;
+                drop(lease);
+                match parsed {
+                    Ok(output)=>Json(json!({"text":output["choices"][0]["message"]["content"],"usage":output["usage"],"model":id,"revision":revision,"structural_quality":null})).into_response(),
+                    Err(e)=>failure("backend_error",e.to_string()).into_response(),
+                }
+            }
+            Ok(upstream) => forward_response(upstream, lease).await,
+            Err(e) => failure("backend_unreachable", e.to_string()).into_response(),
+        };
+        outcome = Some((response, local, revision, backend, admission));
+        break;
+    }
+    let Some((response, local, revision, backend, admission)) = outcome else {
+        // Only reachable when every candidate refused a fallback; the last one never does.
+        return failure("capacity_unavailable", "Every candidate host was full").into_response();
     };
     let mut response = model_headers(response, &revision, &backend);
     response
@@ -590,6 +630,17 @@ fn model_headers(mut response: Response, revision: &str, backend: &str) -> Respo
     }
     response
 }
+/// A peer's 429 is always admission (the request never ran); a 503 only when it says so.
+fn refused_before_running(upstream: &reqwest::Response) -> bool {
+    let code = upstream
+        .headers()
+        .get("x-granite-error-code")
+        .and_then(|v| v.to_str().ok());
+    upstream.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (upstream.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            && code == Some("capacity_unavailable"))
+}
+
 async fn forward_response(
     upstream: reqwest::Response,
     lease: Option<crate::lifecycle::Lease>,
@@ -610,6 +661,7 @@ async fn forward_response(
         for name in [
             "x-granite-model-revision",
             "x-granite-backend",
+            "x-granite-error-code",
             "retry-after",
         ] {
             if let Some(value) = headers.get(name) {
@@ -696,8 +748,52 @@ fn normalize_chat(id: &str, value: &mut Value) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{equal, normalize_chat};
+    use super::{equal, normalize_chat, refused_before_running};
+    use crate::lifecycle::failure;
+    use axum::response::IntoResponse;
     use serde_json::json;
+
+    #[test]
+    fn busy_answers_retry_soon_and_name_their_code() {
+        for (code, wait) in [
+            ("admission_busy", "2"),
+            ("capacity_unavailable", "2"),
+            ("insufficient_memory", "30"),
+        ] {
+            let response = failure(code, "x").into_response();
+            assert_eq!(response.headers()["retry-after"], wait, "{code}");
+            assert_eq!(response.headers()["x-granite-error-code"], code);
+        }
+        assert!(
+            !failure("unknown_model", "x")
+                .into_response()
+                .headers()
+                .contains_key("retry-after")
+        );
+    }
+
+    #[test]
+    fn only_refusals_that_never_ran_move_to_the_next_host() {
+        let peer = |status: u16, code: Option<&str>| {
+            let mut b = axum::http::Response::builder().status(status);
+            if let Some(c) = code {
+                b = b.header("x-granite-error-code", c);
+            }
+            reqwest::Response::from(b.body("").unwrap())
+        };
+        assert!(refused_before_running(&peer(429, None)));
+        assert!(refused_before_running(&peer(
+            503,
+            Some("capacity_unavailable")
+        )));
+        assert!(!refused_before_running(&peer(
+            503,
+            Some("backend_unreachable")
+        )));
+        assert!(!refused_before_running(&peer(503, None)));
+        assert!(!refused_before_running(&peer(502, Some("backend_error"))));
+        assert!(!refused_before_running(&peer(200, None)));
+    }
 
     #[test]
     fn token_comparison_requires_exact_match() {

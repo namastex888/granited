@@ -59,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         operations: Mutex::new(BTreeMap::new()),
         hardware: tokio::sync::Mutex::new((Instant::now() - Duration::from_secs(10), initial)),
         peer_hardware: tokio::sync::Mutex::new(BTreeMap::new()),
+        rejections: std::sync::Mutex::new(BTreeMap::new()),
         started: Instant::now(),
     });
     for peer in &config.peers {

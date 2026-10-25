@@ -51,7 +51,10 @@ fn score(hw: &Value, model: &str, capability: &str, background: bool) -> Option<
     {
         return None;
     }
-    let active = worker["active_requests"].as_u64()?;
+    // Held slots, not served requests: a slot waiting on a cold load is already taken.
+    let active = worker["occupied_slots"]
+        .as_u64()
+        .or_else(|| worker["active_requests"].as_u64())?;
     let slots = worker["max_concurrency"].as_u64()?;
     if active >= slots || (background && active >= slots.saturating_sub(1)) {
         return None;
@@ -146,9 +149,22 @@ pub struct Service {
     /// `None` records a failed probe so an unreachable peer is skipped until the backoff expires.
     pub peer_hardware: AsyncMutex<BTreeMap<String, (Instant, Option<Value>)>>,
     pub started: Instant,
+    /// Requests refused before they ran, by model and error code (`/internal/metrics`).
+    pub rejections: Mutex<BTreeMap<String, BTreeMap<String, u64>>>,
 }
 
 impl Service {
+    pub fn count_rejection(&self, model: &str, code: &str) {
+        *self
+            .rejections
+            .lock()
+            .unwrap()
+            .entry(model.to_owned())
+            .or_default()
+            .entry(code.to_owned())
+            .or_default() += 1;
+    }
+
     pub fn resolve_model<'a>(&'a self, id: &'a str) -> &'a str {
         if self.models.contains_key(id) {
             return id;
@@ -165,14 +181,15 @@ impl Service {
             .unwrap_or(id)
     }
 
-    /// Choose an available warm worker first, then a cold worker that fits measured memory.
-    /// The selected node still enforces admission; requests are never replayed after execution.
+    /// Rank available warm workers first, then cold workers that fit measured memory. The chosen
+    /// node still enforces admission; a request is retried on the next candidate only when it was
+    /// refused before running, never after execution.
     pub async fn placement(
         &self,
         model: &str,
         capability: &str,
         background: bool,
-    ) -> Result<Option<crate::config::Peer>> {
+    ) -> Result<Vec<Option<crate::config::Peer>>> {
         let mut candidates = Vec::new();
         if self.workers.contains_key(model)
             && let Some(value) = score(&self.hardware().await, model, capability, background)
@@ -215,7 +232,13 @@ impl Service {
         .await;
         candidates.extend(results.into_iter().flatten());
         candidates.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-        candidates.into_iter().next().map(|(_,peer)|peer).ok_or_else(||failure("capacity_unavailable","No reachable deployment has an available slot and measured memory capacity; inspect /internal/hosts"))
+        if candidates.is_empty() {
+            return Err(failure(
+                "capacity_unavailable",
+                "No reachable deployment has an available slot and measured memory capacity; inspect /internal/hosts",
+            ));
+        }
+        Ok(candidates.into_iter().map(|(_, peer)| peer).collect())
     }
 
     /// Re-measure local hardware and, when asked, operator-owned native routers. The background
@@ -256,6 +279,7 @@ impl Service {
             }
             json!({"model":id, "state":rt.state, "pid":process.as_ref().and_then(OwnedProcess::id),
                 "active_requests":w.active.load(Ordering::SeqCst), "max_concurrency":w.spec.max_concurrency,
+                "occupied_slots":w.spec.max_concurrency.saturating_sub(w.slots.available_permits()),
                 "external":w.spec.external,"external_lifecycle":w.spec.external_lifecycle,
                 "enabled_capabilities":w.spec.enabled_capabilities,"backend":w.spec.backend,
                 "revision":w.spec.revision, "device":w.spec.device, "reserved_peak_bytes":w.spec.memory_bytes,
@@ -1311,5 +1335,16 @@ mod tests {
         let mut failed = worker("failed", 0);
         failed["last_error"] = json!({"code":"worker_exited"});
         assert!(score(&host(failed, 1 << 40), "m", "chat", false).is_none());
+    }
+    #[test]
+    fn held_slots_count_even_before_the_load_finishes() {
+        // A slot taken for a cold load is not yet in active_requests.
+        let mut loading = worker("ready", 0);
+        loading["occupied_slots"] = json!(2);
+        assert!(score(&host(loading, 1 << 40), "m", "chat", false).is_none());
+        let mut one = worker("ready", 0);
+        one["occupied_slots"] = json!(1);
+        assert!(score(&host(one.clone(), 1 << 40), "m", "chat", false).is_some());
+        assert!(score(&host(one, 1 << 40), "m", "chat", true).is_none());
     }
 }

@@ -18,6 +18,7 @@ jobs:
       - run: cargo test --locked
       - run: cargo build --locked
       - run: python3 scripts/smoke_stub.py
+      - run: python3 scripts/smoke_fallback.py
       - run: PYTHONPATH=benchmarks python3 -m unittest discover -s benchmarks/tests
       - run: python3 -m py_compile scripts/*.py workers/*.py
       - run: python3 scripts/granitectl.py scan
