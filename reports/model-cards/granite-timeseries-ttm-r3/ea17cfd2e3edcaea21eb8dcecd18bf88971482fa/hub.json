@@ -1,0 +1,75 @@
+{
+  "_id": "6a0f071f34d581f01e7bc16d",
+  "id": "ibm-granite/granite-timeseries-ttm-r3",
+  "private": false,
+  "pipeline_tag": "time-series-forecasting",
+  "tags": [
+    "safetensors",
+    "tinytimemixer",
+    "time series",
+    "forecasting",
+    "pretrained models",
+    "foundation models",
+    "time series foundation models",
+    "time-series",
+    "granite-ttm-r3",
+    "time-series-forecasting",
+    "license:apache-2.0",
+    "region:us"
+  ],
+  "downloads": 320075,
+  "likes": 20,
+  "modelId": "ibm-granite/granite-timeseries-ttm-r3",
+  "author": "ibm-granite",
+  "sha": "ea17cfd2e3edcaea21eb8dcecd18bf88971482fa",
+  "lastModified": "2026-07-02T04:42:55.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {
+    "model_type": "tinytimemixer"
+  },
+  "cardData": {
+    "license": "apache-2.0",
+    "pipeline_tag": "time-series-forecasting",
+    "tags": [
+      "time series",
+      "forecasting",
+      "pretrained models",
+      "foundation models",
+      "time series foundation models",
+      "time-series",
+      "tinytimemixer",
+      "granite-ttm-r3"
+    ]
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "config.json"
+    },
+    {
+      "rfilename": "model.safetensors"
+    },
+    {
+      "rfilename": "model.sig"
+    },
+    {
+      "rfilename": "ttm_image.webp"
+    }
+  ],
+  "spaces": [],
+  "createdAt": "2026-05-21T13:22:39.000Z",
+  "safetensors": {
+    "parameters": {
+      "F32": 1414514
+    },
+    "total": 1414514
+  },
+  "usedStorage": 1475868508
+}

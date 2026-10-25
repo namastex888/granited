@@ -1,0 +1,121 @@
+{
+  "_id": "66edc1edc5be2c4769b4fbdd",
+  "id": "ibm-granite/granite-geospatial-wxc-downscaling",
+  "private": false,
+  "pipeline_tag": "image-to-image",
+  "library_name": "terratorch",
+  "tags": [
+    "terratorch",
+    "pytorch",
+    "image-to-image",
+    "license:cdla-permissive-2.0",
+    "region:us"
+  ],
+  "downloads": 277,
+  "likes": 37,
+  "modelId": "ibm-granite/granite-geospatial-wxc-downscaling",
+  "author": "ibm-granite",
+  "sha": "7153a0260c482bdceb3b6edcae731321a04c8f3d",
+  "lastModified": "2025-09-08T09:25:24.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {},
+  "cardData": {
+    "license": "cdla-permissive-2.0",
+    "library_name": "terratorch",
+    "pipeline_tag": "image-to-image"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "ECCC/configs/config_CONV.yaml"
+    },
+    {
+      "rfilename": "ECCC/configs/config_UNET.yaml"
+    },
+    {
+      "rfilename": "ECCC/configs/config_UNET_small.yaml"
+    },
+    {
+      "rfilename": "ECCC/data_sample/gdps_regridded/2022073100_020.nc"
+    },
+    {
+      "rfilename": "ECCC/data_sample/gdps_regridded/static_regridded_gdps.nc"
+    },
+    {
+      "rfilename": "ECCC/data_sample/hrdps/2022073100_020.nc"
+    },
+    {
+      "rfilename": "ECCC/data_sample/hrdps/static_hrdps.nc"
+    },
+    {
+      "rfilename": "ECCC/indices/all_data/dataNoShuffleGdpsHdrpsTestVela.json"
+    },
+    {
+      "rfilename": "ECCC/indices/all_data/dataNoShuffleGdpsHdrpsTrainVela.json"
+    },
+    {
+      "rfilename": "ECCC/indices/all_data/dataNoShuffleGdpsHdrpsValVela.json"
+    },
+    {
+      "rfilename": "ECCC/indices/index_example.json"
+    },
+    {
+      "rfilename": "ECCC/indices/staticDataIndex.json"
+    },
+    {
+      "rfilename": "ECCC/scalers/input_mu.pt"
+    },
+    {
+      "rfilename": "ECCC/scalers/input_sigma.pt"
+    },
+    {
+      "rfilename": "ECCC/scalers/input_static_mu.pt"
+    },
+    {
+      "rfilename": "ECCC/scalers/input_static_sigma.pt"
+    },
+    {
+      "rfilename": "ECCC/scalers/target_mu.pt"
+    },
+    {
+      "rfilename": "ECCC/scalers/target_sigma.pt"
+    },
+    {
+      "rfilename": "ECCC/scalers/target_static_mu.pt"
+    },
+    {
+      "rfilename": "ECCC/scalers/target_static_sigma.pt"
+    },
+    {
+      "rfilename": "ECCC/weights/best_rmse_CONV.pt"
+    },
+    {
+      "rfilename": "ECCC/weights/best_rmse_UNET.pt"
+    },
+    {
+      "rfilename": "ECCC/weights/best_rmse_UNET_small.pt"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "config.yaml"
+    },
+    {
+      "rfilename": "downscaling_T2M_coolwarm_animated.gif"
+    },
+    {
+      "rfilename": "downscaling_eccc_u10.png"
+    },
+    {
+      "rfilename": "pytorch_model.bin"
+    }
+  ],
+  "spaces": [],
+  "createdAt": "2024-09-20T18:41:49.000Z",
+  "usedStorage": 45978568374
+}

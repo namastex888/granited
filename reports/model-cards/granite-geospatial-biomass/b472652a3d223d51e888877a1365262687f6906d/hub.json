@@ -1,0 +1,53 @@
+{
+  "_id": "667db3ee1fc985946ec2da52",
+  "id": "ibm-granite/granite-geospatial-biomass",
+  "private": false,
+  "pipeline_tag": "image-feature-extraction",
+  "library_name": "terratorch",
+  "tags": [
+    "terratorch",
+    "image-feature-extraction",
+    "arxiv:2503.20563",
+    "arxiv:2310.18660",
+    "arxiv:2406.19888",
+    "license:apache-2.0",
+    "region:us"
+  ],
+  "downloads": 185,
+  "likes": 51,
+  "modelId": "ibm-granite/granite-geospatial-biomass",
+  "author": "ibm-granite",
+  "sha": "b472652a3d223d51e888877a1365262687f6906d",
+  "lastModified": "2025-09-08T09:25:08.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {},
+  "cardData": {
+    "license": "apache-2.0",
+    "library_name": "terratorch",
+    "pipeline_tag": "image-feature-extraction"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "biomass_model.ckpt"
+    },
+    {
+      "rfilename": "biomass_model_lightning.ckpt"
+    },
+    {
+      "rfilename": "config.yaml"
+    }
+  ],
+  "spaces": [
+    "Abbas0786/project"
+  ],
+  "createdAt": "2024-06-27T18:48:14.000Z",
+  "usedStorage": 1399749841
+}

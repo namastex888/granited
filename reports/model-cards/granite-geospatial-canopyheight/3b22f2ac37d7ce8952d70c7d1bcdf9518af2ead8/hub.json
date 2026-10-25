@@ -1,0 +1,50 @@
+{
+  "_id": "6729d5f6662e5b774b2fa16b",
+  "id": "ibm-granite/granite-geospatial-canopyheight",
+  "private": false,
+  "pipeline_tag": "image-feature-extraction",
+  "library_name": "terratorch",
+  "tags": [
+    "terratorch",
+    "pytorch",
+    "image-feature-extraction",
+    "arxiv:2310.18660",
+    "license:apache-2.0",
+    "region:us"
+  ],
+  "downloads": 14,
+  "likes": 19,
+  "modelId": "ibm-granite/granite-geospatial-canopyheight",
+  "author": "ibm-granite",
+  "sha": "3b22f2ac37d7ce8952d70c7d1bcdf9518af2ead8",
+  "lastModified": "2025-09-08T09:24:54.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {},
+  "cardData": {
+    "license": "apache-2.0",
+    "library_name": "terratorch",
+    "pipeline_tag": "image-feature-extraction"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "canopyheight_map.png"
+    },
+    {
+      "rfilename": "config.yaml"
+    },
+    {
+      "rfilename": "pytorch_model.bin"
+    }
+  ],
+  "spaces": [],
+  "createdAt": "2024-11-05T08:23:18.000Z",
+  "usedStorage": 1049564761
+}

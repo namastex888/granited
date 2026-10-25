@@ -1,0 +1,56 @@
+{
+  "_id": "68c97a9d9ee1ff05054f0c74",
+  "id": "ibm-granite/granite-geospatial-ocean",
+  "private": false,
+  "library_name": "terratorch",
+  "tags": [
+    "terratorch",
+    "Pytorch",
+    "Earth Observation",
+    "Foundation Model",
+    "IBM",
+    "arxiv:2509.21273",
+    "license:apache-2.0",
+    "region:us"
+  ],
+  "downloads": 109,
+  "likes": 12,
+  "modelId": "ibm-granite/granite-geospatial-ocean",
+  "author": "ibm-granite",
+  "sha": "319ac6486374b696986b2d64ef2d870d160935ba",
+  "lastModified": "2025-09-26T12:40:36.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {},
+  "cardData": {
+    "license": "apache-2.0",
+    "library_name": "terratorch",
+    "tags": [
+      "Pytorch",
+      "Earth Observation",
+      "Foundation Model",
+      "IBM"
+    ]
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "checkpoint.pt"
+    },
+    {
+      "rfilename": "config.yaml"
+    },
+    {
+      "rfilename": "model_architecture.png"
+    }
+  ],
+  "spaces": [],
+  "createdAt": "2025-09-16T14:56:29.000Z",
+  "usedStorage": 172030290
+}

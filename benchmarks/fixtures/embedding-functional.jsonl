@@ -1,0 +1,1 @@
+{"id": "embedding-functional", "family": "embedding", "path": "v1/embeddings", "request": {"model": "granite-embedding-97m-multilingual-r2", "input": ["Mem\u00f3ria local e busca em portugu\u00eas.", "Local memory and multilingual search."]}, "synthetic": true}

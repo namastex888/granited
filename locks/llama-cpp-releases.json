@@ -1,0 +1,50 @@
+{
+  "release": "b11669",
+  "commit": "620d2225cc436ab0b001e3200e590e3b286ef9ab",
+  "source": "https://github.com/ggml-org/llama.cpp/releases/tag/b11669",
+  "note": "Digests are the release API sha256 values; the installer refuses any archive that differs.",
+  "assets": {
+    "macos-arm64": {
+      "name": "llama-b11669-bin-macos-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11669/llama-b11669-bin-macos-arm64.tar.gz",
+      "size": 12191582,
+      "sha256": "dbed55493d72bc1ba2babc8770d669c2289b5bc4ee9fb2a4dfc158d45b7d13fd"
+    },
+    "linux-x86_64-vulkan": {
+      "name": "llama-b11669-bin-ubuntu-vulkan-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11669/llama-b11669-bin-ubuntu-vulkan-x64.tar.gz",
+      "size": 30497889,
+      "sha256": "e8709e5ba6c1b093dea7f3de57f4aba842f9a188fba6b465782d65d6fcfa4d9f"
+    },
+    "linux-aarch64-vulkan": {
+      "name": "llama-b11669-bin-ubuntu-vulkan-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11669/llama-b11669-bin-ubuntu-vulkan-arm64.tar.gz",
+      "size": 24187561,
+      "sha256": "d283522e479c0d532e3a04d715dd852ffb2d95925caa6d41ef2ba53a65e46a51"
+    },
+    "linux-x86_64-cuda": {
+      "name": "llama-b11669-bin-ubuntu-cuda-12.8-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11669/llama-b11669-bin-ubuntu-cuda-12.8-x64.tar.gz",
+      "size": 172525113,
+      "sha256": "4703ed1a3cd6e8504affb6cb9866f501e96d634d68a002dc9a8251c9e2819b49"
+    },
+    "linux-x86_64-rocm": {
+      "name": "llama-b11669-bin-ubuntu-rocm-10.0-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11669/llama-b11669-bin-ubuntu-rocm-10.0-x64.tar.gz",
+      "size": 245070738,
+      "sha256": "02d36f06accd8fdcb2d41078361b21fb2df5d139f169bf4efcb8424a7dbbef01"
+    },
+    "linux-x86_64-cpu": {
+      "name": "llama-b11669-bin-ubuntu-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11669/llama-b11669-bin-ubuntu-x64.tar.gz",
+      "size": 17851611,
+      "sha256": "cf07c1c112d709bd67e522017471de57ed0ec8bea031d732c5422351c07f65ac"
+    },
+    "linux-aarch64-cpu": {
+      "name": "llama-b11669-bin-ubuntu-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11669/llama-b11669-bin-ubuntu-arm64.tar.gz",
+      "size": 13900160,
+      "sha256": "9ac6fda2058d35677608a06f751a50122ddfa4ce0ddb7f084466b8e79b6d4a99"
+    }
+  }
+}

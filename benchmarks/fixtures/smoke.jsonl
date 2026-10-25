@@ -1,0 +1,4 @@
+{"id":"lang-math","family":"language","path":"v1/chat/completions","request":{"model":"granite-4.2-3b","messages":[{"role":"user","content":"What is 2+2? Reply only with the number."}],"temperature":0,"max_tokens":32},"expected":{"answer":"4"}}
+{"id":"forecast-linear","family":"timeseries","path":"v1/forecast","request":{"model":"granite-ttm-r3","history":[1,2,3,4,5],"horizon":2,"quantiles":[0.1,0.5,0.9]},"expected":{"history":[1,2,3,4,5],"future":[6,7],"seasonality":1}}
+{"id":"guardian-safe","family":"guardian","path":"v1/guardian/evaluate","request":{"model":"granite-guardian-4.1-8b","criterion":"harm","prompt":"What is the capital of France?"},"expected":{"flagged":false}}
+{"id":"embedding-search","family":"embedding","path":"v1/retrieval/rank","request":{"model":"granite-embedding-97m-multilingual-r2","query":"cachorro","documents":[{"id":"a","text":"Um cachorro feliz"},{"id":"b","text":"Imposto de renda"}]},"expected":{"relevance":{"a":2,"b":0}}}

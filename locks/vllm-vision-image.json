@@ -1,0 +1,29 @@
+{
+  "tag": "v0.32.0",
+  "image": "docker.io/vllm/vllm-openai",
+  "digest": "sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34",
+  "manifest": {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+    "manifests": [
+      {
+        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+        "size": 8679,
+        "digest": "sha256:6ff5ff0ddf3658d2c2d677dac5ca2d4726ce0156b4371166d918181b210bd4bc",
+        "platform": {
+          "architecture": "arm64",
+          "os": "linux"
+        }
+      },
+      {
+        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+        "size": 8684,
+        "digest": "sha256:6ee133356d49ed24cee03dd0cda3d3980279a11c107ce3e752c89e76540f41c9",
+        "platform": {
+          "architecture": "amd64",
+          "os": "linux"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "_id": "6a75ec7af772614d61098313",
+  "id": "ibm-granite/granite-timeseries-patchtst-fm-r2",
+  "private": false,
+  "pipeline_tag": "time-series-forecasting",
+  "tags": [
+    "safetensors",
+    "patchtst_fm",
+    "time series",
+    "forecasting",
+    "pretrained models",
+    "foundation models",
+    "time series foundation models",
+    "time-series",
+    "time-series-forecasting",
+    "arxiv:2211.14730",
+    "arxiv:2005.08100",
+    "arxiv:2508.02879",
+    "arxiv:2403.07815",
+    "arxiv:2602.06909",
+    "license:openmdw-1.0",
+    "region:us"
+  ],
+  "downloads": 223102,
+  "likes": 17,
+  "modelId": "ibm-granite/granite-timeseries-patchtst-fm-r2",
+  "author": "ibm-granite",
+  "sha": "b125275f9204d37cbb81fe47b9cf5e08a521e829",
+  "lastModified": "2026-09-09T16:03:05.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {
+    "architectures": [
+      "PatchTSTFMForPrediction"
+    ],
+    "model_type": "patchtst_fm"
+  },
+  "cardData": {
+    "license": "openmdw-1.0",
+    "pipeline_tag": "time-series-forecasting",
+    "tags": [
+      "time series",
+      "forecasting",
+      "pretrained models",
+      "foundation models",
+      "time series foundation models",
+      "time-series"
+    ]
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "LICENSE"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "config.json"
+    },
+    {
+      "rfilename": "figures/crps_zero.png"
+    },
+    {
+      "rfilename": "figures/crps_zero_pretrained.png"
+    },
+    {
+      "rfilename": "figures/mase_zero.png"
+    },
+    {
+      "rfilename": "figures/mase_zero_pretrained.png"
+    },
+    {
+      "rfilename": "model.safetensors"
+    },
+    {
+      "rfilename": "model.sig"
+    }
+  ],
+  "spaces": [
+    "SZLHOLDINGS/lyte",
+    "SZLHOLDINGS/szl-frontier"
+  ],
+  "createdAt": "2026-08-07T14:32:26.000Z",
+  "safetensors": {
+    "parameters": {
+      "F32": 384600208
+    },
+    "total": 384600208
+  },
+  "usedStorage": 3074848128
+}

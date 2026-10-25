@@ -1,0 +1,874 @@
+{
+  "resolved_at": "2026-10-25T18:43:06.378371+00:00",
+  "models": [
+    {
+      "id": "granite-4.2-3b",
+      "hf_repo": "ibm-granite/granite-4.2-3b",
+      "family": "language",
+      "capabilities": [
+        "chat"
+      ],
+      "hf_revision": "4e9c275e232f10211ec88644d106a1f6a1b60e06",
+      "architecture": [
+        "GraniteForCausalLM"
+      ],
+      "license": "apache-2.0",
+      "context_limit": 131072,
+      "processor": "AutoTokenizer",
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "llama_cpp",
+        "mlx",
+        "vllm"
+      ],
+      "validation": {
+        "model_card_checked": true,
+        "backend_smoke_test_passed": true,
+        "benchmarked": false,
+        "card_fetched": true,
+        "performance_smoke_measured": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-4.2-3b/4e9c275e232f10211ec88644d106a1f6a1b60e06",
+      "parameter_count": 3659737600,
+      "aliases": [
+        "ibm-granite/granite-4.2-3b",
+        "granite-4.2-3b-Q4_K_M"
+      ],
+      "execution_receipts": [
+        "reports/language-3b-direct.json",
+        "reports/language-3b-rust.json",
+        "reports/language-3b-litellm.json",
+        "reports/hx-language-3b-direct.json",
+        "reports/hx-language-3b-rust.json",
+        "reports/hx-language-3b-litellm.json"
+      ],
+      "quality_benchmarked": false
+    },
+    {
+      "id": "granite-4.2-8b",
+      "hf_repo": "ibm-granite/granite-4.2-8b",
+      "family": "language",
+      "capabilities": [
+        "chat"
+      ],
+      "hf_revision": "a7042144125ce5ae64f89610e8289647fc000b9a",
+      "architecture": [
+        "GraniteForCausalLM"
+      ],
+      "license": "apache-2.0",
+      "context_limit": 131072,
+      "processor": "AutoTokenizer",
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "llama_cpp",
+        "mlx",
+        "vllm"
+      ],
+      "validation": {
+        "model_card_checked": true,
+        "backend_smoke_test_passed": true,
+        "benchmarked": false,
+        "card_fetched": true,
+        "performance_smoke_measured": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-4.2-8b/a7042144125ce5ae64f89610e8289647fc000b9a",
+      "parameter_count": 8791592960,
+      "aliases": [
+        "ibm-granite/granite-4.2-8b",
+        "granite-4.2-8b-Q4_K_M"
+      ],
+      "execution_receipts": [
+        "reports/language-8b-direct.json",
+        "reports/language-8b-rust.json",
+        "reports/language-8b-litellm.json",
+        "reports/hx-language-8b-direct.json",
+        "reports/hx-language-8b-rust.json",
+        "reports/hx-language-8b-litellm.json"
+      ],
+      "quality_benchmarked": false
+    },
+    {
+      "id": "granite-switch-4.1-8b",
+      "hf_repo": "ibm-granite/granite-switch-4.1-8b",
+      "family": "switch",
+      "capabilities": [
+        "chat",
+        "adapters"
+      ],
+      "hf_revision": "0d1625d16df2d54cafb6bc5cb0650aec043f77d6",
+      "architecture": [
+        "GraniteSwitchForCausalLM"
+      ],
+      "license": "apache-2.0",
+      "context_limit": 131072,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "vllm_switch_isolated",
+        "llama_cpp_systemone_unvalidated"
+      ],
+      "validation": {
+        "model_card_checked": true,
+        "backend_smoke_test_passed": true,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [
+        "Decision endpoint validated; guardian-core, audio cascade and generic adapter chat remain unvalidated and disabled in this deployment.",
+        "Transformers/vLLM Switch constraints remain isolated from the Vision runtime."
+      ],
+      "card_path": "reports/model-cards/granite-switch-4.1-8b/0d1625d16df2d54cafb6bc5cb0650aec043f77d6",
+      "parameter_count": 8776400896,
+      "requirements": {
+        "transformers": ">=5.16,<=5.17",
+        "torch": ">=2.11",
+        "vllm": ">=0.26,<0.28",
+        "adapter_activation_required": true,
+        "separate_environment": true
+      },
+      "aliases": [
+        "ibm-granite/granite-switch-4.1-8b",
+        "granite-switch-4.1-8b-Q4_K_M"
+      ],
+      "execution_receipts": [
+        "reports/switch-first-inference.json"
+      ],
+      "validated_runtime_capabilities": [
+        "adapters:decision via llama.cpp b11870 /v1/systemone"
+      ]
+    },
+    {
+      "id": "granite-vision-4.1-4b",
+      "hf_repo": "ibm-granite/granite-vision-4.1-4b",
+      "family": "vision",
+      "capabilities": [
+        "chat",
+        "vision"
+      ],
+      "hf_revision": "37d591f06319e8f1638b5adcf58bdf50e0f84f7a",
+      "architecture": [
+        "Granite4VisionForConditionalGeneration"
+      ],
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": "AutoProcessor",
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "vllm"
+      ],
+      "validation": {
+        "model_card_checked": true,
+        "backend_smoke_test_passed": true,
+        "benchmarked": false,
+        "card_fetched": true,
+        "performance_smoke_measured": true
+      },
+      "incompatibilities": [
+        "Validated with the pinned native vLLM architecture and remote code disabled. Runtime held after the temporary GPU validation window."
+      ],
+      "card_path": "reports/model-cards/granite-vision-4.1-4b/37d591f06319e8f1638b5adcf58bdf50e0f84f7a",
+      "parameter_count": 3997203904,
+      "aliases": [
+        "ibm-granite/granite-vision-4.1-4b"
+      ],
+      "execution_receipts": [
+        "reports/vision-direct.json",
+        "reports/vision-rust.json",
+        "reports/vision-litellm.json"
+      ],
+      "quality_benchmarked": false
+    },
+    {
+      "id": "granite-speech-5.0-470m-turboctc",
+      "hf_repo": "ibm-granite/granite-speech-5.0-470m-turboctc",
+      "family": "speech",
+      "capabilities": [
+        "transcription"
+      ],
+      "hf_revision": "1dd23f46f6d4e6eae2531982ba2e33220086dd97",
+      "architecture": [
+        "GraniteSpeech5ForCTC"
+      ],
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "transformers",
+        "mlx_audio"
+      ],
+      "validation": {
+        "model_card_checked": true,
+        "backend_smoke_test_passed": true,
+        "benchmarked": false,
+        "card_fetched": true,
+        "performance_smoke_measured": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-speech-5.0-470m-turboctc/1dd23f46f6d4e6eae2531982ba2e33220086dd97",
+      "parameter_count": 472993792,
+      "requirements": {
+        "transformers": ">=5.16.0",
+        "processor": "AutoProcessor",
+        "model_class": "AutoModelForCTC",
+        "languages": [
+          "en",
+          "fr",
+          "de",
+          "es",
+          "pt",
+          "it",
+          "ja"
+        ],
+        "streaming_validated": false
+      },
+      "aliases": [
+        "ibm-granite/granite-speech-5.0-470m-turboctc"
+      ],
+      "execution_receipts": [
+        "reports/hx-speech-direct.json",
+        "reports/hx-speech-rust.json",
+        "reports/hx-speech-litellm.json"
+      ],
+      "quality_benchmarked": false
+    },
+    {
+      "id": "granite-speech-5.0-2b",
+      "hf_repo": "ibm-granite/granite-speech-5.0-2b",
+      "family": "speech",
+      "capabilities": [
+        "transcription"
+      ],
+      "hf_revision": "c075cf19e041a2e4d16c5ee24763e5b037d8f479",
+      "architecture": [
+        "GraniteSpeechForConditionalGeneration"
+      ],
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": "AutoProcessor",
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "transformers",
+        "mlx_audio"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-speech-5.0-2b/c075cf19e041a2e4d16c5ee24763e5b037d8f479",
+      "parameter_count": 2313207132,
+      "aliases": [
+        "ibm-granite/granite-speech-5.0-2b"
+      ]
+    },
+    {
+      "id": "granite-timeseries-ttm-r3",
+      "hf_repo": "ibm-granite/granite-timeseries-ttm-r3",
+      "family": "time_series",
+      "capabilities": [
+        "forecast"
+      ],
+      "hf_revision": "ea17cfd2e3edcaea21eb8dcecd18bf88971482fa",
+      "architecture": "tinytimemixer",
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "tsfm"
+      ],
+      "validation": {
+        "model_card_checked": true,
+        "backend_smoke_test_passed": true,
+        "benchmarked": false,
+        "card_fetched": true,
+        "performance_smoke_measured": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-timeseries-ttm-r3/ea17cfd2e3edcaea21eb8dcecd18bf88971482fa",
+      "parameter_count": 1414514,
+      "requirements": {
+        "context_length": 512,
+        "maximum_horizon": 30,
+        "quantile_levels": [
+          0.1,
+          0.2,
+          0.3,
+          0.4,
+          0.5,
+          0.6,
+          0.7,
+          0.8,
+          0.9
+        ],
+        "architecture_class": "TinyTimeMixerForDecomposedPrediction",
+        "processor": "native TSFM scaler; equally spaced univariate observations"
+      },
+      "measurements": {
+        "scope": "functional synthetic series; no task quality benchmark",
+        "device": "cpu",
+        "host": "mac",
+        "peak_process_rss_bytes": 487145472,
+        "native_inference_seconds_first_probe": 0.012090125004760921,
+        "http_latency_reports": [
+          "reports/ttm-direct.json",
+          "reports/ttm-rust.json",
+          "reports/ttm-litellm.json"
+        ]
+      },
+      "aliases": [
+        "ibm-granite/granite-timeseries-ttm-r3",
+        "granite-ttm-r3"
+      ],
+      "execution_receipts": [
+        "reports/hx-ttm-direct.json",
+        "reports/hx-ttm-rust.json",
+        "reports/hx-ttm-litellm.json"
+      ],
+      "quality_benchmarked": false
+    },
+    {
+      "id": "granite-timeseries-patchtst-fm-r2",
+      "hf_repo": "ibm-granite/granite-timeseries-patchtst-fm-r2",
+      "family": "time_series",
+      "capabilities": [
+        "forecast"
+      ],
+      "hf_revision": "b125275f9204d37cbb81fe47b9cf5e08a521e829",
+      "architecture": [
+        "PatchTSTFMForPrediction"
+      ],
+      "license": "openmdw-1.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "tsfm"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-timeseries-patchtst-fm-r2/b125275f9204d37cbb81fe47b9cf5e08a521e829",
+      "parameter_count": 384600208,
+      "aliases": [
+        "ibm-granite/granite-timeseries-patchtst-fm-r2"
+      ]
+    },
+    {
+      "id": "granite-timeseries-flowstate-r1",
+      "hf_repo": "ibm-granite/granite-timeseries-flowstate-r1",
+      "family": "time_series",
+      "capabilities": [
+        "forecast"
+      ],
+      "hf_revision": "05effc6cb39ee16dce9dd0064ed1a76e4b8ff464",
+      "architecture": [
+        "FlowStateModel"
+      ],
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "tsfm"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-timeseries-flowstate-r1/05effc6cb39ee16dce9dd0064ed1a76e4b8ff464",
+      "parameter_count": 9069312,
+      "aliases": [
+        "ibm-granite/granite-timeseries-flowstate-r1"
+      ]
+    },
+    {
+      "id": "granite-timeseries-tspulse-r1",
+      "hf_repo": "ibm-granite/granite-timeseries-tspulse-r1",
+      "family": "time_series",
+      "capabilities": [
+        "anomalies",
+        "imputation",
+        "classification"
+      ],
+      "hf_revision": "2e64fcdc2a06d3565dfadaf0065c0ab5055f80f2",
+      "architecture": [
+        "TSPulseForReconstruction"
+      ],
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "tsfm"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-timeseries-tspulse-r1/2e64fcdc2a06d3565dfadaf0065c0ab5055f80f2",
+      "parameter_count": 1084330,
+      "aliases": [
+        "ibm-granite/granite-timeseries-tspulse-r1"
+      ]
+    },
+    {
+      "id": "granite-timeseries-ensemble-r1",
+      "hf_repo": "ibm-granite/granite-timeseries-ensemble-r1",
+      "family": "time_series",
+      "capabilities": [
+        "forecast"
+      ],
+      "hf_revision": "6ecd4629d3a94121232d390f3b30af0ee2de4c95",
+      "architecture": "granite_probabilistic_ensemble",
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "tsfm"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-timeseries-ensemble-r1/6ecd4629d3a94121232d390f3b30af0ee2de4c95",
+      "parameter_count": null,
+      "aliases": [
+        "ibm-granite/granite-timeseries-ensemble-r1"
+      ]
+    },
+    {
+      "id": "granite-embedding-311m-multilingual-r2",
+      "hf_repo": "ibm-granite/granite-embedding-311m-multilingual-r2",
+      "family": "embedding",
+      "capabilities": [
+        "embeddings",
+        "retrieval"
+      ],
+      "hf_revision": "44399559930365213510b1ee2eb15ded83374f0e",
+      "architecture": [
+        "ModernBertModel"
+      ],
+      "license": "apache-2.0",
+      "context_limit": 32768,
+      "processor": "AutoTokenizer",
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "sentence_transformers",
+        "onnx"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-embedding-311m-multilingual-r2/44399559930365213510b1ee2eb15ded83374f0e",
+      "parameter_count": 311664384,
+      "aliases": [
+        "ibm-granite/granite-embedding-311m-multilingual-r2"
+      ]
+    },
+    {
+      "id": "granite-embedding-97m-multilingual-r2",
+      "hf_repo": "ibm-granite/granite-embedding-97m-multilingual-r2",
+      "family": "embedding",
+      "capabilities": [
+        "embeddings",
+        "retrieval"
+      ],
+      "hf_revision": "835ad14087e140460703cf0fae09f97d469d65c2",
+      "architecture": [
+        "ModernBertModel"
+      ],
+      "license": "apache-2.0",
+      "context_limit": 32768,
+      "processor": "AutoTokenizer",
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "sentence_transformers",
+        "onnx"
+      ],
+      "validation": {
+        "model_card_checked": true,
+        "backend_smoke_test_passed": true,
+        "benchmarked": false,
+        "card_fetched": true,
+        "performance_smoke_measured": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-embedding-97m-multilingual-r2/835ad14087e140460703cf0fae09f97d469d65c2",
+      "parameter_count": 97441152,
+      "aliases": [
+        "ibm-granite/granite-embedding-97m-multilingual-r2"
+      ],
+      "execution_receipts": [
+        "reports/hx-embedding-direct.json",
+        "reports/hx-embedding-rust.json",
+        "reports/hx-embedding-litellm.json"
+      ],
+      "quality_benchmarked": false
+    },
+    {
+      "id": "granite-embedding-reranker-english-r2",
+      "hf_repo": "ibm-granite/granite-embedding-reranker-english-r2",
+      "family": "rerank",
+      "capabilities": [
+        "rerank"
+      ],
+      "hf_revision": "d09d3d6971b689bf9c23839e45a470874d46e13a",
+      "architecture": [
+        "ModernBertForSequenceClassification"
+      ],
+      "license": "apache-2.0",
+      "context_limit": 8192,
+      "processor": "AutoTokenizer",
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "transformers"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-embedding-reranker-english-r2/d09d3d6971b689bf9c23839e45a470874d46e13a",
+      "parameter_count": 149605633,
+      "aliases": [
+        "ibm-granite/granite-embedding-reranker-english-r2"
+      ]
+    },
+    {
+      "id": "granite-docling-258M",
+      "hf_repo": "ibm-granite/granite-docling-258M",
+      "family": "document",
+      "capabilities": [
+        "documents"
+      ],
+      "hf_revision": "982fe3b40f2fa73c365bdb1bcacf6c81b7184bfe",
+      "architecture": [
+        "Idefics3ForConditionalGeneration"
+      ],
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": "AutoProcessor",
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "docling"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-docling-258M/982fe3b40f2fa73c365bdb1bcacf6c81b7184bfe",
+      "parameter_count": 257517120,
+      "aliases": [
+        "ibm-granite/granite-docling-258M"
+      ]
+    },
+    {
+      "id": "granite-guardian-4.1-8b",
+      "hf_repo": "ibm-granite/granite-guardian-4.1-8b",
+      "family": "guardian",
+      "capabilities": [
+        "guardian"
+      ],
+      "hf_revision": "ab01ccca5dcfb80246369a086a4a87a29198f5af",
+      "architecture": [
+        "GraniteForCausalLM"
+      ],
+      "license": "apache-2.0",
+      "context_limit": 131072,
+      "processor": "AutoTokenizer",
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "transformers",
+        "vllm"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/granite-guardian-4.1-8b/ab01ccca5dcfb80246369a086a4a87a29198f5af",
+      "parameter_count": 8380551168,
+      "aliases": [
+        "ibm-granite/granite-guardian-4.1-8b"
+      ]
+    },
+    {
+      "id": "granite-geospatial-biomass",
+      "hf_repo": "ibm-granite/granite-geospatial-biomass",
+      "family": "geospatial",
+      "capabilities": [
+        "geospatial"
+      ],
+      "hf_revision": "b472652a3d223d51e888877a1365262687f6906d",
+      "architecture": null,
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "terratorch"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [
+        "Discovery only: bands, normalization, task head and runtime not validated; execution disabled."
+      ],
+      "card_path": "reports/model-cards/granite-geospatial-biomass/b472652a3d223d51e888877a1365262687f6906d",
+      "parameter_count": null,
+      "task": null,
+      "aliases": [
+        "ibm-granite/granite-geospatial-biomass"
+      ]
+    },
+    {
+      "id": "granite-geospatial-wxc-downscaling",
+      "hf_repo": "ibm-granite/granite-geospatial-wxc-downscaling",
+      "family": "geospatial",
+      "capabilities": [
+        "geospatial"
+      ],
+      "hf_revision": "7153a0260c482bdceb3b6edcae731321a04c8f3d",
+      "architecture": null,
+      "license": "cdla-permissive-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "terratorch"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [
+        "Discovery only: bands, normalization, task head and runtime not validated; execution disabled."
+      ],
+      "card_path": "reports/model-cards/granite-geospatial-wxc-downscaling/7153a0260c482bdceb3b6edcae731321a04c8f3d",
+      "parameter_count": null,
+      "task": null,
+      "aliases": [
+        "ibm-granite/granite-geospatial-wxc-downscaling"
+      ]
+    },
+    {
+      "id": "granite-geospatial-canopyheight",
+      "hf_repo": "ibm-granite/granite-geospatial-canopyheight",
+      "family": "geospatial",
+      "capabilities": [
+        "geospatial"
+      ],
+      "hf_revision": "3b22f2ac37d7ce8952d70c7d1bcdf9518af2ead8",
+      "architecture": null,
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "terratorch"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [
+        "Discovery only: bands, normalization, task head and runtime not validated; execution disabled."
+      ],
+      "card_path": "reports/model-cards/granite-geospatial-canopyheight/3b22f2ac37d7ce8952d70c7d1bcdf9518af2ead8",
+      "parameter_count": null,
+      "task": null,
+      "aliases": [
+        "ibm-granite/granite-geospatial-canopyheight"
+      ]
+    },
+    {
+      "id": "granite-geospatial-land-surface-temperature",
+      "hf_repo": "ibm-granite/granite-geospatial-land-surface-temperature",
+      "family": "geospatial",
+      "capabilities": [
+        "geospatial"
+      ],
+      "hf_revision": "d45655ca6530289dde73be24895dad5a19c1a591",
+      "architecture": null,
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "terratorch"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [
+        "Discovery only: bands, normalization, task head and runtime not validated; execution disabled."
+      ],
+      "card_path": "reports/model-cards/granite-geospatial-land-surface-temperature/d45655ca6530289dde73be24895dad5a19c1a591",
+      "parameter_count": null,
+      "task": null,
+      "aliases": [
+        "ibm-granite/granite-geospatial-land-surface-temperature"
+      ]
+    },
+    {
+      "id": "granite-geospatial-uki-flooddetection",
+      "hf_repo": "ibm-granite/granite-geospatial-uki-flooddetection",
+      "family": "geospatial",
+      "capabilities": [
+        "geospatial"
+      ],
+      "hf_revision": "9549eee228006fc01481ff997794697a4a6d0621",
+      "architecture": null,
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "terratorch"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [
+        "Discovery only: bands, normalization, task head and runtime not validated; execution disabled."
+      ],
+      "card_path": "reports/model-cards/granite-geospatial-uki-flooddetection/9549eee228006fc01481ff997794697a4a6d0621",
+      "parameter_count": null,
+      "task": null,
+      "aliases": [
+        "ibm-granite/granite-geospatial-uki-flooddetection"
+      ]
+    },
+    {
+      "id": "granite-geospatial-uki",
+      "hf_repo": "ibm-granite/granite-geospatial-uki",
+      "family": "geospatial",
+      "capabilities": [
+        "geospatial"
+      ],
+      "hf_revision": "b581ec89ff06224ec99299fd40cb71343584352e",
+      "architecture": null,
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "terratorch"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [
+        "Discovery only: bands, normalization, task head and runtime not validated; execution disabled."
+      ],
+      "card_path": "reports/model-cards/granite-geospatial-uki/b581ec89ff06224ec99299fd40cb71343584352e",
+      "parameter_count": null,
+      "task": null,
+      "aliases": [
+        "ibm-granite/granite-geospatial-uki"
+      ]
+    },
+    {
+      "id": "granite-geospatial-ocean",
+      "hf_repo": "ibm-granite/granite-geospatial-ocean",
+      "family": "geospatial",
+      "capabilities": [
+        "geospatial"
+      ],
+      "hf_revision": "319ac6486374b696986b2d64ef2d870d160935ba",
+      "architecture": null,
+      "license": "apache-2.0",
+      "context_limit": null,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "terratorch"
+      ],
+      "validation": {
+        "model_card_checked": false,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true
+      },
+      "incompatibilities": [
+        "Discovery only: bands, normalization, task head and runtime not validated; execution disabled."
+      ],
+      "card_path": "reports/model-cards/granite-geospatial-ocean/319ac6486374b696986b2d64ef2d870d160935ba",
+      "parameter_count": null,
+      "task": null,
+      "aliases": [
+        "ibm-granite/granite-geospatial-ocean"
+      ]
+    }
+  ]
+}

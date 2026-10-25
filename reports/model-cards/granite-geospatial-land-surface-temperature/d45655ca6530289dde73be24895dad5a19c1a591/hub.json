@@ -1,0 +1,55 @@
+{
+  "_id": "6729d7178c66e2359346564a",
+  "id": "ibm-granite/granite-geospatial-land-surface-temperature",
+  "private": false,
+  "pipeline_tag": "image-feature-extraction",
+  "library_name": "terratorch",
+  "tags": [
+    "terratorch",
+    "image-feature-extraction",
+    "arxiv:2310.18660",
+    "license:apache-2.0",
+    "region:us"
+  ],
+  "downloads": 336,
+  "likes": 21,
+  "modelId": "ibm-granite/granite-geospatial-land-surface-temperature",
+  "author": "ibm-granite",
+  "sha": "d45655ca6530289dde73be24895dad5a19c1a591",
+  "lastModified": "2025-09-08T09:25:34.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {},
+  "cardData": {
+    "license": "apache-2.0",
+    "library_name": "terratorch",
+    "pipeline_tag": "image-feature-extraction"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "Johannesburg_summer_lst_animation.gif"
+    },
+    {
+      "rfilename": "LST_model.ckpt"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "cities_map2.png"
+    },
+    {
+      "rfilename": "config.yaml"
+    },
+    {
+      "rfilename": "config_full_tile.yaml"
+    }
+  ],
+  "spaces": [],
+  "createdAt": "2024-11-05T08:28:07.000Z",
+  "usedStorage": 2669716434
+}

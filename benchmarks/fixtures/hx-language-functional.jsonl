@@ -1,0 +1,1 @@
+{"id": "hx-language-off", "family": "language", "path": "v1/chat/completions", "stream": true, "profile": "reasoning_off", "synthetic": true, "request": {"model": "granite-4.2-3b", "messages": [{"role": "user", "content": "Reply with the word READY."}], "chat_template_kwargs": {"enable_thinking": false}, "temperature": 0, "seed": 7, "max_tokens": 30}}

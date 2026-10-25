@@ -1,0 +1,124 @@
+{
+  "_id": "6a71f2115ad06d30a91e6305",
+  "id": "ibm-granite/granite-speech-5.0-470m-turboctc",
+  "private": false,
+  "pipeline_tag": "automatic-speech-recognition",
+  "library_name": "transformers",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "granite_speech5_ctc",
+    "automatic-speech-recognition",
+    "multilingual",
+    "en",
+    "fr",
+    "de",
+    "es",
+    "pt",
+    "it",
+    "ja",
+    "arxiv:2609.20104",
+    "license:apache-2.0",
+    "endpoints_compatible",
+    "region:us"
+  ],
+  "downloads": 60015,
+  "likes": 100,
+  "modelId": "ibm-granite/granite-speech-5.0-470m-turboctc",
+  "author": "ibm-granite",
+  "sha": "1dd23f46f6d4e6eae2531982ba2e33220086dd97",
+  "lastModified": "2026-10-21T21:30:36.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {
+    "architectures": [
+      "GraniteSpeech5ForCTC"
+    ],
+    "model_type": "granite_speech5_ctc",
+    "tokenizer_config": {
+      "pad_token": "<unk>",
+      "unk_token": "<unk>"
+    }
+  },
+  "cardData": {
+    "license": "apache-2.0",
+    "language": [
+      "multilingual",
+      "en",
+      "fr",
+      "de",
+      "es",
+      "pt",
+      "it",
+      "ja"
+    ],
+    "pipeline_tag": "automatic-speech-recognition",
+    "library_name": "transformers"
+  },
+  "transformersInfo": {
+    "auto_model": "AutoModelForCTC",
+    "pipeline_tag": "automatic-speech-recognition"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "assets/conformer_blocks.png"
+    },
+    {
+      "rfilename": "assets/granite-speech-5.0-470m-turboctc-cer-ja.png"
+    },
+    {
+      "rfilename": "assets/granite-speech-5.0-470m-turboctc-pareto-rtfx.png"
+    },
+    {
+      "rfilename": "assets/granite-speech-5.0-470m-turboctc-wer-en.png"
+    },
+    {
+      "rfilename": "assets/granite-speech-5.0-470m-turboctc-wer-ml.png"
+    },
+    {
+      "rfilename": "config.json"
+    },
+    {
+      "rfilename": "generation_config.json"
+    },
+    {
+      "rfilename": "model.safetensors"
+    },
+    {
+      "rfilename": "model.sig"
+    },
+    {
+      "rfilename": "processor_config.json"
+    },
+    {
+      "rfilename": "tokenizer.json"
+    },
+    {
+      "rfilename": "tokenizer_config.json"
+    }
+  ],
+  "spaces": [
+    "ibm-granite/granite-speech-streaming-webgpu",
+    "Steveeeeeeen/smallest-s2s",
+    "RobinsAIWorld/granite-speech-streaming-webgpu",
+    "yumu908/granite-speech-streaming-webgpu",
+    "eustlb/asr-models-on-the-hub",
+    "kadirnar/closed-source-asr-leaderboard"
+  ],
+  "createdAt": "2026-08-04T14:07:13.000Z",
+  "safetensors": {
+    "parameters": {
+      "F32": 131072,
+      "BF16": 472862720
+    },
+    "total": 472993792
+  },
+  "usedStorage": 5678515551
+}

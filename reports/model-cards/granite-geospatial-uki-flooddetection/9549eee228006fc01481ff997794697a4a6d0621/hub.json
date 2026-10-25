@@ -1,0 +1,48 @@
+{
+  "_id": "674ea61855621d2ef730bcdd",
+  "id": "ibm-granite/granite-geospatial-uki-flooddetection",
+  "private": false,
+  "pipeline_tag": "image-segmentation",
+  "library_name": "terratorch",
+  "tags": [
+    "terratorch",
+    "image-segmentation",
+    "license:apache-2.0",
+    "region:us"
+  ],
+  "downloads": 136,
+  "likes": 21,
+  "modelId": "ibm-granite/granite-geospatial-uki-flooddetection",
+  "author": "ibm-granite",
+  "sha": "9549eee228006fc01481ff997794697a4a6d0621",
+  "lastModified": "2025-12-02T13:41:49.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {},
+  "cardData": {
+    "license": "apache-2.0",
+    "library_name": "terratorch",
+    "pipeline_tag": "image-segmentation"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "config.yaml"
+    },
+    {
+      "rfilename": "flood_image.jpg"
+    },
+    {
+      "rfilename": "granite_geospatial_uki_flood_detection_v1.ckpt"
+    }
+  ],
+  "spaces": [],
+  "createdAt": "2024-12-03T06:32:56.000Z",
+  "usedStorage": 2261313379
+}

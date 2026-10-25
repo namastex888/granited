@@ -1,0 +1,32 @@
+{
+  "architectures": [
+    "FlowStateModel"
+  ],
+  "context_length": 2048,
+  "decoder_dim": 256,
+  "decoder_patch_len": 24,
+  "decoder_type": "legs",
+  "embedding_feature_dim": 512,
+  "encoder_num_hippo_blocks": 8,
+  "encoder_num_layers": 6,
+  "encoder_state_dim": 512,
+  "init_processing": true,
+  "prediction_type": "quantile",
+  "min_context": 2048,
+  "model_type": "flowstate",
+  "quantiles": [
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.8,
+    0.9
+  ],
+  "torch_dtype": "float32",
+  "transformers_version": "4.52.1",
+  "use_freq": true,
+  "with_missing": true
+}

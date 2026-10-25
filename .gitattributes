@@ -1,0 +1,4 @@
+# Preserve fetched primary sources verbatim, including their original whitespace.
+reports/model-cards/** -whitespace
+reports/upstream-tsfm/** -whitespace
+reports/omlx-source/** -whitespace

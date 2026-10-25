@@ -1,0 +1,42 @@
+{
+ "id": "ibm-granite/granite-4.2-3b-q4-mlx",
+ "sha": "0c6f39b1827afd5eb2c1c3b13751929857434953",
+ "note": "sha256 for LFS files; git_blob_sha1 for small files (sha1 of b\"blob <size>\\0\" + content)",
+ "files": [
+  {
+   "path": "chat_template.jinja",
+   "size": 9013,
+   "git_blob_sha1": "e5c9466d5347257b44a8991b3d24219bf9c0ad1b"
+  },
+  {
+   "path": "config.json",
+   "size": 1185,
+   "git_blob_sha1": "40b9dba4054e822abf3d78826995f7ab1f821047"
+  },
+  {
+   "path": "generation_config.json",
+   "size": 207,
+   "git_blob_sha1": "f1d6b1b535c3ea39049147eed933e58ed696bf0c"
+  },
+  {
+   "path": "granite-4.2-3b-q4-metadata.properties",
+   "size": 1162,
+   "git_blob_sha1": "4a9ff1924e1e03d0f57643848008e901c235d869"
+  },
+  {
+   "path": "model.safetensors",
+   "size": 2059005430,
+   "sha256": "a71cf9297827b3c3d6ad426081b67c423044f6576632dabe40e7590552fd267d"
+  },
+  {
+   "path": "tokenizer.json",
+   "size": 7153414,
+   "git_blob_sha1": "109016081083c2a3bba91a2111acb68656426fde"
+  },
+  {
+   "path": "tokenizer_config.json",
+   "size": 436,
+   "git_blob_sha1": "f7ac37dfc80e740ec5dc66a6d696e9d3a28976fd"
+  }
+ ]
+}

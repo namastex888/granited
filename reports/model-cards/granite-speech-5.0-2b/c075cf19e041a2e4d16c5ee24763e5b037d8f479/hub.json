@@ -1,0 +1,158 @@
+{
+  "_id": "6ac66f093e754d3073922a29",
+  "id": "ibm-granite/granite-speech-5.0-2b",
+  "private": false,
+  "pipeline_tag": "automatic-speech-recognition",
+  "library_name": "transformers",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "granite_speech",
+    "automatic-speech-recognition",
+    "multilingual",
+    "en",
+    "fr",
+    "de",
+    "es",
+    "pt",
+    "ja",
+    "arxiv:2310.02943",
+    "arxiv:2505.08699",
+    "arxiv:2603.11243",
+    "arxiv:2604.12398",
+    "arxiv:2604.22817",
+    "arxiv:2604.11269",
+    "arxiv:2603.08397",
+    "base_model:ibm-granite/granite-4.0-1b-base",
+    "base_model:finetune:ibm-granite/granite-4.0-1b-base",
+    "license:apache-2.0",
+    "endpoints_compatible",
+    "region:us"
+  ],
+  "downloads": 2697,
+  "likes": 49,
+  "modelId": "ibm-granite/granite-speech-5.0-2b",
+  "author": "ibm-granite",
+  "sha": "c075cf19e041a2e4d16c5ee24763e5b037d8f479",
+  "lastModified": "2026-10-23T11:27:40.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {
+    "architectures": [
+      "GraniteSpeechForConditionalGeneration"
+    ],
+    "model_type": "granite_speech",
+    "tokenizer_config": {
+      "bos_token": "<|end_of_text|>",
+      "eos_token": "<|end_of_text|>",
+      "pad_token": "<|pad|>",
+      "unk_token": "<|unk|>"
+    },
+    "chat_template_jinja": "{% for message in messages %}{% if message['role'] == 'user' %}USER: {{ message['content'] }}\n ASSISTANT:{% elif message['role'] == 'assistant' %}{{ message['content'] }}{% endif %}{% endfor %}"
+  },
+  "cardData": {
+    "license": "apache-2.0",
+    "language": [
+      "multilingual",
+      "en",
+      "fr",
+      "de",
+      "es",
+      "pt",
+      "ja"
+    ],
+    "base_model": [
+      "ibm-granite/granite-4.0-1b-base"
+    ],
+    "library_name": "transformers",
+    "pipeline_tag": "automatic-speech-recognition"
+  },
+  "transformersInfo": {
+    "auto_model": "AutoModelForMultimodalLM",
+    "pipeline_tag": "automatic-speech-recognition",
+    "processor": "AutoProcessor"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "added_tokens.json"
+    },
+    {
+      "rfilename": "assets/granite-5.0-2b-vs-open-english.png"
+    },
+    {
+      "rfilename": "assets/granite-speech-5.0-2b-bleu-en-x.png"
+    },
+    {
+      "rfilename": "assets/granite-speech-5.0-2b-bleu-x-en.png"
+    },
+    {
+      "rfilename": "assets/granite-speech-5.0-2b-ffasr-wer.png"
+    },
+    {
+      "rfilename": "assets/granite-speech-5.0-2b-kwb-f1.png"
+    },
+    {
+      "rfilename": "assets/granite-speech-5.0-2b-wer-cv.png"
+    },
+    {
+      "rfilename": "chat_template.jinja"
+    },
+    {
+      "rfilename": "config.json"
+    },
+    {
+      "rfilename": "generation_config.json"
+    },
+    {
+      "rfilename": "merges.txt"
+    },
+    {
+      "rfilename": "model.safetensors"
+    },
+    {
+      "rfilename": "model.sig"
+    },
+    {
+      "rfilename": "multilingual_sample.wav"
+    },
+    {
+      "rfilename": "out_llm.safetensors"
+    },
+    {
+      "rfilename": "preprocessor_config.json"
+    },
+    {
+      "rfilename": "processor_config.json"
+    },
+    {
+      "rfilename": "special_tokens_map.json"
+    },
+    {
+      "rfilename": "tokenizer.json"
+    },
+    {
+      "rfilename": "tokenizer_config.json"
+    },
+    {
+      "rfilename": "vocab.json"
+    }
+  ],
+  "spaces": [
+    "hugging-apps/granite-speech-5-0-2b"
+  ],
+  "createdAt": "2026-10-07T16:10:49.000Z",
+  "safetensors": {
+    "parameters": {
+      "BF16": 2313207132
+    },
+    "total": 2313207132
+  },
+  "usedStorage": 5040872787
+}

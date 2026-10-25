@@ -1,0 +1,224 @@
+{
+  "_id": "6a7c9835f3c8ea101eb3c4b9",
+  "id": "ibm-granite/granite-4.2-8b-GGUF",
+  "private": false,
+  "library_name": "llama.cpp",
+  "tags": [
+    "llama.cpp",
+    "gguf",
+    "language",
+    "granite-4.2",
+    "base_model:ibm-granite/granite-4.2-8b",
+    "base_model:quantized:ibm-granite/granite-4.2-8b",
+    "license:apache-2.0",
+    "endpoints_compatible",
+    "region:us",
+    "conversational"
+  ],
+  "downloads": 253989,
+  "likes": 47,
+  "modelId": "ibm-granite/granite-4.2-8b-GGUF",
+  "author": "ibm-granite",
+  "sha": "93f3f6a8938ee922b784cf4e5b4203cd3428df8f",
+  "lastModified": "2026-09-02T22:09:30.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {},
+  "cardData": {
+    "license": "apache-2.0",
+    "library_name": "llama.cpp",
+    "tags": [
+      "language",
+      "granite-4.2",
+      "gguf"
+    ],
+    "base_model": [
+      "ibm-granite/granite-4.2-8b"
+    ]
+  },
+  "gguf": {
+    "total": 8791592960,
+    "architecture": "granite",
+    "context_length": 131072,
+    "chat_template": "{%- macro tool_to_json(tool) -%}\n    {%- set ns_tool = namespace(first=true) -%}\n    {{- '{' -}}\n    {%- for k, v in tool.items() -%}\n        {%- if k != 'defer_loading' and k != 'strict' -%}\n            {%- if not ns_tool.first -%}{{- ', ' -}}{%- endif -%}\n            {%- set ns_tool.first = false -%}\n            {{- '\"' ~ k ~ '\": ' ~ (v | tojson(ensure_ascii=False)) -}}\n        {%- endif -%}\n    {%- endfor -%}\n    {{- '}' -}}\n{%- endmacro -%}\n{%- set enable_thinking = enable_thinking if enable_thinking is defined else True %}\n{%- set low_effort = low_effort if low_effort is defined else False %}\n{%- if reasoning_effort is defined and reasoning_effort is not none %}\n    {%- set low_effort = reasoning_effort == \"low\" %}\n{%- endif %}\n{%- set truncate_history_thinking = truncate_history_thinking if truncate_history_thinking is defined else True %}\n\n{%- set ns = namespace(last_user_idx = -1) %}\n{%- set loop_messages = messages %}\n{%- for m in loop_messages %}\n  {%- if m[\"role\"] == \"user\" %}\n    {%- set ns.last_user_idx = loop.index0 %}\n  {%- endif %}\n{%- endfor %}\n\n{%- if messages[0][\"role\"] == \"system\" %}\n    {%- set system_message = messages[0][\"content\"] %}\n    {%- set loop_messages = messages[1:] %}\n{%- else %}\n    {%- set system_message = \"\" %}\n    {%- set loop_messages = messages %}\n{%- endif %}\n{%- if not tools is defined %}\n    {%- set tools = [] %}\n{%- endif %}\n{# Recompute last_user_idx relative to loop_messages after handling system #}\n{%- set ns = namespace(last_user_idx = -1) %}\n{%- for m in loop_messages %}\n  {%- if m[\"role\"] == \"user\" %}\n    {%- set ns.last_user_idx = loop.index0 %}\n  {%- endif %}\n{%- endfor %}\n{%- if system_message is defined %}\n    {{- \"<|im_start|>system\\n\" + system_message }}\n{%- else %}\n    {%- if tools is iterable and tools | length > 0 %}\n        {{- \"<|im_start|>system\\n\" }}\n    {%- endif %}\n{%- endif %}\n{%- if tools is iterable and tools | length > 0 %}\n    {%- if system_message is defined and system_message | length > 0 %}\n        {{- \"\\n\\n\" }}\n    {%- endif %}\n    {{- \"# Tools\\n\\nYou have access to the following functions:\\n\\n\" }}\n    {{- \"<tools>\" }}\n    {%- for tool in tools %}\n        {%- if tool.function is defined %}\n            {%- set tool = tool.function %}\n        {%- endif %}\n        {%- if tool.defer_loading is not defined or not tool.defer_loading %}\n            {{- '\\n' ~ tool_to_json(tool) }}\n        {%- endif %}\n    {%- endfor %}\n    {{- \"\\n</tools>\" }}\n\n    {{- '\\n\\nIf you choose to call a function ONLY reply in the following format with NO suffix:\\n\\n<tool_call>\\n<function=example_function_name>\\n<parameter=example_parameter_1>\\nvalue_1\\n</parameter>\\n<parameter=example_parameter_2>\\nThis is the value for the second parameter\\nthat can span\\nmultiple lines\\n</parameter>\\n</function>\\n</tool_call>\\n\\n<IMPORTANT>\\nReminder:\\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\\n- Required parameters MUST be specified\\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\\n</IMPORTANT>' }}\n{%- endif %}\n\n\n{%- if system_message is defined %}\n    {{- '<|im_end|>\\n' }}\n{%- else %}\n    {%- if tools is iterable and tools | length > 0 %}\n        {{- '<|im_end|>\\n' }}\n    {%- endif %}\n{%- endif %}\n\n{%- for message in loop_messages %}\n    {%- if message.role == \"assistant\" %}\n        {# Add reasoning content in to content field for unified processing below. #}\n        {%- if message.reasoning_content is defined and message.reasoning_content is string and message.reasoning_content | trim | length > 0 %}\n            {%- set content = \"<think>\\n\" ~ message.reasoning_content ~ \"\\n</think>\\n\" ~ (message.content | default('', true)) %}\n        {%- else %}\n            {%- set content = message.content | default('', true) %}\n            {%- if content is string -%}\n                {# Allow downstream logic to to take care of broken thought, only handle coherent reasoning here. #}\n                {%- if '<think>' not in content and '</think>' not in content -%}\n                    {%- set content = \"<think></think>\" ~ content -%}\n                {%- endif -%}\n            {%- else -%}\n                {%- set content = content -%}\n            {%- endif -%}\n        {%- endif %}\n        {%- if message.tool_calls is defined and message.tool_calls is iterable and message.tool_calls | length > 0 %}\n            {# Assistant message has tool calls. #}\n            {{- '<|im_start|>assistant\\n' }}\n                {%- set include_content = not (truncate_history_thinking and loop.index0 < ns.last_user_idx) %}\n                {%- if content is string and content | trim | length > 0 %}\n                    {%- if include_content %}\n                        {{- (content | trim) ~ '\\n' -}}\n                    {%- else %}\n                        {%- set c = (content | string) %}\n                        {%- if '</think>' in c %}\n                            {# Keep only content after the last closing think. Also generation prompt causes this. #}\n                            {%- set c = c.split('</think>')[-1] %}\n                        {%- elif '<think>' in c %}\n                            {# If <think> was opened but never closed, drop the trailing think segment #}\n                            {%- set c = c.split('<think>')[0] %}\n                        {%- endif %}\n                        {%- set c = \"<think></think>\" ~ c | trim %}\n                        {%- if c | length > 0 %}\n                            {{- c ~ '\\n' -}}\n                        {%- endif %}\n                    {%- endif %}\n                {%- else %}\n                    {{- \"<think></think>\" -}}\n                {%- endif %}\n                {%- for tool_call in message.tool_calls %}\n                    {%- if tool_call.function is defined %}\n                        {%- set tool_call = tool_call.function %}\n                    {%- endif %}\n                    {{- '<tool_call>\\n<function=' ~ tool_call.name ~ '>\\n' -}}\n                        {%- if tool_call.arguments is defined %}\n                            {%- for args_name, args_value in tool_call.arguments|items %}\n                                {{- '<parameter=' ~ args_name ~ '>\\n' -}}\n                                    {%- set args_value = args_value | tojson | safe if args_value is mapping or (args_value is sequence and args_value is not string) else args_value | string %}\n                                {{- args_value ~ '\\n</parameter>\\n' -}}\n                            {%- endfor %}\n                        {%- endif %}\n                    {{- '</function>\\n</tool_call>\\n' -}}\n                {%- endfor %}\n                {{- '<|im_end|>\\n' }}\n        {%- else %}\n            {# Assistant message doesn't have tool calls. #}\n            {%- if not (truncate_history_thinking and loop.index0 < ns.last_user_idx) %}\n                {{- '<|im_start|>assistant\\n' ~ (content | default('', true) | string | trim) ~ '<|im_end|>\\n' }}\n            {%- else %}\n                {%- set c = (content | default('', true) | string) %}\n                {%- if '<think>' in c and '</think>' in c %}\n                    {%- set c = \"<think></think>\" ~ c.split('</think>')[-1] %}\n                {%- endif %}\n                {%- set c = c | trim %}\n                {%- if c | length > 0 %}\n                    {{- '<|im_start|>assistant\\n' ~ c ~ '<|im_end|>\\n' }}\n                {%- else %}\n                    {{- '<|im_start|>assistant\\n<|im_end|>\\n' }}\n                {%- endif %}\n            {%- endif %}\n        {%- endif %}\n    {%- elif message.role == \"user\" or message.role == \"system\" %}\n        {{- '<|im_start|>' + message.role + '\\n' }}\n        {%- set content = message.content | string %}\n        {%- if message.role == \"user\" and loop.index0 == ns.last_user_idx and low_effort %}\n            {{- content + '\\n\\n{reasoning effort: low}' }}\n        {%- else %}\n            {{- content }}\n        {%- endif %}\n        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}\n        {%- if loop.previtem and loop.previtem.role != \"tool\" %}\n            {{- '<|im_start|>user\\n' }}\n        {%- endif %}\n        {{- '<tool_response>\\n' }}\n        {{- message.content }}\n        {{- '\\n</tool_response>\\n' }}\n        {%- if not loop.last and loop.nextitem.role != \"tool\" %}\n            {{- '<|im_end|>\\n' }}\n        {%- elif loop.last %}\n            {{- '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- else %}\n        {{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>\\n' }}\n    {%- endif %}\n{%- endfor %}\n\n{%- if add_generation_prompt %}\n    {%- if enable_thinking %}\n        {{- '<|im_start|>assistant\\n<think>\\n' }}\n    {%- else %}\n        {{- '<|im_start|>assistant\\n<think></think>' }}\n    {%- endif %}\n{%- endif %}\n",
+    "bos_token": "<s>",
+    "eos_token": "<|im_end|>",
+    "totalFileSize": 17587421312
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "blobId": "da4ae53c5c8740bf5260a424237b779e62116d2b",
+      "size": 2448
+    },
+    {
+      "rfilename": "README.md",
+      "blobId": "5942f9f3d2e06dca426b1d08c3be4762595c14fa",
+      "size": 472
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q2_K.gguf",
+      "blobId": "abb17173bed61023b172e174bab6dd0d7290281f",
+      "size": 3412312192,
+      "lfs": {
+        "sha256": "dbaf5bba1dff2e37fb4e9563ae322001f2228d37d2080e55796fef6c8b81ef1f",
+        "size": 3412312192,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q3_K_L.gguf",
+      "blobId": "f1f1fa90e77fa51058388d18b5d05200fc65ee85",
+      "size": 4699897984,
+      "lfs": {
+        "sha256": "6230bceb89841b65d0455019f134a47fb6f4316dbc1f909747ec4329518220eb",
+        "size": 4699897984,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q3_K_M.gguf",
+      "blobId": "24881cba0044b42de532f98739dd5b041527d593",
+      "size": 4347052160,
+      "lfs": {
+        "sha256": "921fd8b015a34420607300831cf70ed306581b9bf33742ae804e42b894a2ca9a",
+        "size": 4347052160,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q3_K_S.gguf",
+      "blobId": "f20390e79267b4bbbd208523667afb2f379a311f",
+      "size": 3942957184,
+      "lfs": {
+        "sha256": "7b9849e1d501e7d85a6a7ef1c9acc23733c5bb1b63ecf0bac1c48bbdb6b5500c",
+        "size": 3942957184,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q4_0.gguf",
+      "blobId": "881b6005d19898b605f2d6b7beffd98ed955db49",
+      "size": 5055955072,
+      "lfs": {
+        "sha256": "82af51c80f8c2913430aa020f97bd3d4708c5fc49c5bfbff09ac012f3c2132d2",
+        "size": 5055955072,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q4_1.gguf",
+      "blobId": "299b411bf8bc8c571915f200733a8cc9b462e9ab",
+      "size": 5579718784,
+      "lfs": {
+        "sha256": "02c58f69dcd7a5f75ce2dbb22da706872c859fe6fa4b321d33f22dab19180463",
+        "size": 5579718784,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q4_K_M.gguf",
+      "blobId": "a3b47fa1287f5574d2948bda4020c211518f3acd",
+      "size": 5347917952,
+      "lfs": {
+        "sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+        "size": 5347917952,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q4_K_S.gguf",
+      "blobId": "0bf968ffb63aea5a4b254e7df32b04701952cc6b",
+      "size": 5090820224,
+      "lfs": {
+        "sha256": "6b2438a9177be0883b27722dadd5271c8e18806e068a7fc30a42c481c000c092",
+        "size": 5090820224,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q5_0.gguf",
+      "blobId": "2812e8b574d739589070842e0cc68d36e2151871",
+      "size": 6103482496,
+      "lfs": {
+        "sha256": "49efb3a7a5bd51c92d72f5d3f858ab5f2a00cbf05f853909d443da1e53725bf5",
+        "size": 6103482496,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q5_1.gguf",
+      "blobId": "b7f44e850c80e5f01a72cf8a2f8450fed87c7e3f",
+      "size": 6627246208,
+      "lfs": {
+        "sha256": "76f9e24373c2848c207f669ceac1755f8b851606c4de7d4f22c0dfac0a7a8d2b",
+        "size": 6627246208,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q5_K_M.gguf",
+      "blobId": "5338e043376af0c487aefb5364b05f51407af67c",
+      "size": 6253887616,
+      "lfs": {
+        "sha256": "074ac7ee98b1703674657a65051caebe188d543656e0ad71eb1f6bb3ae063407",
+        "size": 6253887616,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q5_K_S.gguf",
+      "blobId": "c063f3fab14c012c6d1157926f94cf08cc148542",
+      "size": 6103482496,
+      "lfs": {
+        "sha256": "fd9866f3fdd5b3fd8a0a7942ede9f7e96f53a02e13b9ad77f295b8e08446b0dd",
+        "size": 6103482496,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q6_K.gguf",
+      "blobId": "c28a385b905d93696c36eaec8946653148642a92",
+      "size": 7216480384,
+      "lfs": {
+        "sha256": "5ad3d67f6fe09a448031029bead7f6a088697ca2787c0c5640bf964c59df1a21",
+        "size": 7216480384,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-Q8_0.gguf",
+      "blobId": "19511a5cf104919e15553c7bdd2a52e6fa287c3a",
+      "size": 9345613952,
+      "lfs": {
+        "sha256": "fb66ad5750680c77c76b9dc095961375f14fc88ba15fd5fc084ef6e6701bad77",
+        "size": 9345613952,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "granite-4.2-8b-bf16.gguf",
+      "blobId": "999a4755945004e8b4f7abd0f00e12e2e7fa5519",
+      "size": 17587421312,
+      "lfs": {
+        "sha256": "d82690e0dc827f2c43effeb3d489f572afbe2541fa8b4895b0d958ce473925a6",
+        "size": 17587421312,
+        "pointerSize": 136
+      }
+    },
+    {
+      "rfilename": "granite_thinking_parser.py",
+      "blobId": "92f1f87e36d9fddc44330340f5487a3cbbd0901e",
+      "size": 4649
+    },
+    {
+      "rfilename": "model.sig",
+      "blobId": "bc274cc4d11c5773fdfb891c494bc292de38e274",
+      "size": 12013
+    }
+  ],
+  "spaces": [],
+  "createdAt": "2026-08-12T15:58:45.000Z",
+  "usedStorage": 193428482912
+}

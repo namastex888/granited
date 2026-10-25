@@ -1,0 +1,192 @@
+{
+  "_id": "69e0eaef2617fae9c4c2304d",
+  "id": "ibm-granite/granite-vision-4.1-4b",
+  "private": false,
+  "pipeline_tag": "image-text-to-text",
+  "library_name": "transformers",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "granite4_vision",
+    "image-text-to-text",
+    "conversational",
+    "custom_code",
+    "en",
+    "arxiv:2603.27064",
+    "arxiv:2208.00385",
+    "arxiv:2502.09927",
+    "arxiv:2406.04334",
+    "license:apache-2.0",
+    "eval-results",
+    "endpoints_compatible",
+    "deploy:azure",
+    "region:us"
+  ],
+  "downloads": 123417,
+  "likes": 112,
+  "modelId": "ibm-granite/granite-vision-4.1-4b",
+  "author": "ibm-granite",
+  "sha": "37d591f06319e8f1638b5adcf58bdf50e0f84f7a",
+  "lastModified": "2026-07-13T15:35:23.000Z",
+  "gated": false,
+  "disabled": false,
+  "widgetData": [
+    {
+      "text": "Hi, what can you help me with?"
+    },
+    {
+      "text": "What is 84 * 3 / 2?"
+    },
+    {
+      "text": "Tell me an interesting fact about the universe!"
+    },
+    {
+      "text": "Explain quantum computing in simple terms."
+    }
+  ],
+  "model-index": null,
+  "config": {
+    "architectures": [
+      "Granite4VisionForConditionalGeneration"
+    ],
+    "auto_map": {
+      "AutoConfig": "configuration.Granite4VisionConfig",
+      "AutoModel": "modeling.Granite4VisionForConditionalGeneration",
+      "AutoModelForVision2Seq": "modeling.Granite4VisionForConditionalGeneration",
+      "AutoModelForImageTextToText": "modeling.Granite4VisionForConditionalGeneration",
+      "AutoProcessor": "processing.Granite4VisionProcessor"
+    },
+    "model_type": "granite4_vision",
+    "tokenizer_config": {
+      "bos_token": "<|end_of_text|>",
+      "eos_token": "<|end_of_text|>",
+      "pad_token": "<|pad|>",
+      "unk_token": "<|unk|>"
+    },
+    "chat_template_jinja": "{#- ===== Task tag prompt constants ===== -#}\n{%- set chart2code_prompt = \"Generate code that recreates the chart as best as possible.\" -%}\n{%- set chart2csv_prompt = \"Please examine this chart image. Consider you are a data visualization expert, and extract the data into a CSV table.\\n\\nYour CSV should:\\n- Include a header row with clear column names\\n- Represent all data series/categories shown in the chart\\n- Use numeric values that match the chart as closely as possible\\n\\nOutput only the CSV data, nothing else.\" -%}\n{%- set chart2summary_prompt = \"Can you describe this chart image?\" -%}\n{%- set tables_json_prompt = \"Identify and extract the table schema\\n Extract the schema of all the tables in the image sorted according to the reading order.\\nThe output must be a valid JSON object containing a list of dictionaries with the following structure:\\n\\n                {\\n                    \\\"dimensions\\\": {\\n                        \\\"rows\\\": <number of data rows (excluding header rows)>,\\n                        \\\"columns\\\": <number of columns>,\\n                        \\\"header_rows\\\": <number of header rows>,\\n                        \\\"total_rows\\\": <total number of rows including headers>\\n                    },\\n                    \\\"cells\\\": [\\n                        {\\n                        \\\"row\\\": <row index starting at 1>,\\n                        \\\"col\\\": <column index starting at 1>,\\n                        \\\"colspan\\\": <number of columns spanned>,\\n                        \\\"rowspan\\\": <number of rows spanned>,\\n                        \\\"type\\\": \\\"<'header' or 'data'>\\\",\\n                        \\\"header_level\\\": <header nesting level if type=header, else omit or null>,\\n                        \\\"content\\\": \\\"<string content of the cell>\\\"\\n                        },\\n                        ...\\n                    ]\\n                }\" -%}\n{%- set tables_html_prompt = \"Identify and extract the table schema\\n Extract the schema of all the tables in the image sorted according to the reading order.\\nThe output must be a list of valid HTML tables\" -%}\n{%- set tables_otsl_prompt = \"Identify and extract the table schema\\n Extract the schema of all the tables in the image sorted according to the reading order.\\nThe output must be a list of valid OTSL objects, each consists of the following fields: \\n                        <fcel> - a cell with content in it\\n                        <ecel> - an empty cell\\n                        <lcel> - a cell that is merged with the cell to its left\\n                        <ucel> - a cell that is merged with the cell above it\\n                        <xcel> - a cell that is merged with both the cell above it and the cell to its left\\n                        <nl> - a new line\\n                        <ched> - a column header\\n                        <otsl> - the beginning of the OTSL table\\n                        </otsl> - the end of the OTSL table\\n\\n                        An example for an output:\\n                        [\\n                        <otsl><ched>first table header1<ched>first table header2<nl><fcel>data1<fcel>data2<nl><fcel>data with horizontal span<lcel><nl><fcel>data with vertical span<ecel><nl><ucel><fcel>data3<nl></otsl>,\\n                        <otsl><ched>second table header1<ched>second table header2<nl><fcel>data1<fcel>data2<nl><fcel>data with horizontal span<lcel><nl><fcel>data with vertical span<ecel><nl><ucel><fcel>data3<nl></otsl>\\n                        ]\" -%}\n\n\n{#- ===== Tag expansion dispatcher ===== -#}\n{%- macro expand_tags(text) -%}\n{%- set has_image = \"<image>\" in text -%}\n{#- Determine image position: prefix if <image> appears before the tag, suffix if after -#}\n{%- if has_image -%}\n  {%- set img_idx = text.index(\"<image>\") -%}\n  {%- if \"<chart2code>\" in text -%}{%- set tag_idx = text.index(\"<chart2code>\") -%}\n  {%- elif \"<chart2csv>\" in text -%}{%- set tag_idx = text.index(\"<chart2csv>\") -%}\n  {%- elif \"<chart2summary>\" in text -%}{%- set tag_idx = text.index(\"<chart2summary>\") -%}\n  {%- elif \"<tables_json>\" in text -%}{%- set tag_idx = text.index(\"<tables_json>\") -%}\n  {%- elif \"<tables_html>\" in text -%}{%- set tag_idx = text.index(\"<tables_html>\") -%}\n  {%- elif \"<tables_otsl>\" in text -%}{%- set tag_idx = text.index(\"<tables_otsl>\") -%}\n  {%- else -%}{%- set tag_idx = 999999 -%}\n  {%- endif -%}\n  {%- set img_prefix = \"<image>\\n\" if img_idx < tag_idx else \"\" -%}\n  {%- set img_suffix = \"<image>\\n\" if img_idx >= tag_idx else \"\" -%}\n{%- else -%}\n  {%- set img_prefix = \"\" -%}\n  {%- set img_suffix = \"\" -%}\n{%- endif -%}\n{%- if \"<chart2code>\" in text -%}\n  {{- img_prefix + chart2code_prompt + img_suffix -}}\n{%- elif \"<chart2csv>\" in text -%}\n  {{- img_prefix + chart2csv_prompt + img_suffix -}}\n{%- elif \"<chart2summary>\" in text -%}\n  {{- img_prefix + chart2summary_prompt + img_suffix -}}\n{%- elif \"<tables_json>\" in text -%}\n  {{- img_prefix + tables_json_prompt + img_suffix -}}\n{%- elif \"<tables_html>\" in text -%}\n  {{- img_prefix + tables_html_prompt + img_suffix -}}\n{%- elif \"<tables_otsl>\" in text -%}\n  {{- img_prefix + tables_otsl_prompt + img_suffix -}}\n{%- else -%}\n  {{- text -}}\n{%- endif -%}\n{%- endmacro -%}\n\n{#- ===== Original chat template ===== -#}\n{% macro render_content(x) %}\n    {%- if x is string %}\n        {{ x }}\n    {%- else %}\n        {%- for chunk in x %}\n            {%- if chunk['type'] == 'text' -%}\n                {{ chunk['text']}}\n            {%- elif chunk['type'] == 'image' -%}\n                {{- \"<image>\n\" }}\n            {%- endif -%}\n        {%- endfor -%}\n    {%- endif -%}\n    {% endmacro %}\n\n    {%- set tools_system_message_prefix = 'You are a helpful assistant with access to the following tools. You may call one or more tools to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>'  %}\n{%- set tools_system_message_suffix = '\\n</tools>\\n\\nFor each tool call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\\"name\\\": <function-name>, \\\"arguments\\\": <args-json-object>}\\n</tool_call>. If a tool does not exist in the provided list of tools, notify the user that you do not have the ability to fulfill the request.' %}\n{%- set documents_system_message_prefix = 'You are a helpful assistant with access to the following documents. You may use one or more documents to assist with the user query.\\n\\nYou are given a list of documents within <documents></documents> XML tags:\\n<documents>' %}\n{%- set documents_system_message_suffix = '\\n</documents>\\n\\nWrite the response to the user\\'s input by strictly aligning with the facts in the provided documents. If the information needed to answer the question is not available in the documents, inform the user that the question cannot be answered based on the available data.' %}\n{%- set g4_default_system_message = 'You are a helpful assistant. Please ensure responses are professional, accurate, and safe.' %}\n{%- if available_tools is defined and available_tools %}\n    {%- set tools = available_tools %}\n{%- endif %}\n{%- set ns = namespace(tools_system_message=tools_system_message_prefix,\n                       documents_system_message=documents_system_message_prefix,\n                       default_system_message=g4_default_system_message,\n                       system_message=''\n                       ) %}\n{%- if tools %}\n    {%- for tool in tools %}\n        {%- set ns.tools_system_message = ns.tools_system_message + '\\n' + (tool | tojson) %}\n    {%- endfor %}\n    {%- set ns.tools_system_message = ns.tools_system_message + tools_system_message_suffix %}\n{%- else %}\n    {%- set ns.tools_system_message = '' %}\n{%- endif %}\n{%- if documents %}\n    {%- for document in documents %}\n        {%- set ns.documents_system_message = ns.documents_system_message + '\\n' + (document | tojson) %}\n    {%- endfor %}\n    {%- set ns.documents_system_message = ns.documents_system_message + documents_system_message_suffix %}\n{%- else %}\n    {%- set ns.documents_system_message = '' %}\n{%- endif %}\n{%- if messages[0].role == 'system' %}\n    {%- if messages[0].content is string %}\n        {%- set ns.system_message = messages[0].content %}\n    {%- elif messages[0].content is iterable %}\n        {%- for entry in messages[0].content %}\n            {%- if entry.type== 'text' %}\n                {%- if ns.system_message != '' %}\n                    {%- set ns.system_message = ns.system_message + '\\n' %}\n                {%- endif %}\n                {%- set ns.system_message = ns.system_message + entry.text %}\n            {%- endif %}\n        {%- endfor %}\n    {%- endif %}\n    {%- if tools and documents %}\n        {%- set ns.system_message = ns.system_message + '\\n\\n' +  ns.tools_system_message + '\\n\\n' + ns.documents_system_message %}\n    {%- elif tools %}\n        {%- set ns.system_message = ns.system_message + '\\n\\n' + ns.tools_system_message %}\n    {%- elif documents %}\n        {%- set ns.system_message = ns.system_message + '\\n\\n' + ns.documents_system_message %}\n    {%- endif %}\n{%- else %}\n    {%- if tools and documents %}\n        {%- set ns.system_message = ns.tools_system_message + '\\n\\n' + ns.documents_system_message  %}\n    {%- elif tools %}\n        {%- set ns.system_message = ns.tools_system_message %}\n    {%- elif documents %}\n        {%- set ns.system_message = ns.documents_system_message %}\n    {%- endif %}\n{%- endif %}\n{%- if ns.system_message %}\n    {{- '<|start_of_role|>system<|end_of_role|>' + ns.system_message + '<|end_of_text|>\\n' }}\n{%- else %}\n    {{- '<|start_of_role|>system<|end_of_role|>' + ns.default_system_message + '<|end_of_text|>\\n' }}\n{%- endif %}\n{%- for message in messages %}\n    {%- set content = namespace(val='') %}\n    {%- if render_content(message['content']) is string %}\n        {%- set content.val = render_content(message['content']) %}\n    {%- else %}\n        {%- if render_content(message['content']) is iterable %}\n            {%- for entry in render_content(message['content']) %}\n                {%- if entry.type== 'text' %}\n                    {%- if content.val != '' %}\n                        {%- set content.val = content.val + '\\n' %}\n                    {%- endif %}\n                    {%- set content.val = content.val + entry.text %}\n                {%- endif %}\n            {%- endfor %}\n        {%- endif %}\n    {%- endif %}\n    {%- if (message.role == 'user') or (message.role == 'system' and not loop.first) %}\n        {{- '<|start_of_role|>' + message.role + '<|end_of_role|>' + expand_tags(content.val) + '<|end_of_text|>\\n' }}\n    {%- elif message.role == 'assistant' %}\n        {{- '<|start_of_role|>' + message.role + '<|end_of_role|>' + content.val }}\n        {%- if message.tool_calls %}\n            {%- for tool_call in message.tool_calls %}\n                {%- if (loop.first and content.val) or (not loop.first) %}\n                    {{- '\\n' }}\n                {%- endif %}\n                {%- if tool_call.function %}\n                    {%- set tool_call = tool_call.function %}\n                {%- endif %}\n                {{- '<tool_call>\\n{\"name\": \"' }}\n                {{- tool_call.name }}\n                {{- '\", \"arguments\": ' }}\n                {%- if tool_call.arguments is string %}\n                    {{- tool_call.arguments }}\n                {%- else %}\n                    {{- tool_call.arguments | tojson }}\n                {%- endif %}\n                {{- '}\\n</tool_call>' }}\n            {%- endfor %}\n        {%- endif %}\n        {{- '<|end_of_text|>\\n' }}\n    {%- elif message.role == 'tool' %}\n        {%- if loop.first or (messages[loop.index0 - 1].role != 'tool') %}\n            {{- '<|start_of_role|>user<|end_of_role|>' }}\n        {%- endif %}\n        {{- '\\n<tool_response>\\n' }}\n        {{- content.val }}\n        {{- '\\n</tool_response>' }}\n        {%- if loop.last or (messages[loop.index0 + 1].role != 'tool') %}\n            {{- '<|end_of_text|>\\n' }}\n        {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|start_of_role|>assistant<|end_of_role|>' }}\n{%- endif %}"
+  },
+  "cardData": {
+    "language": [
+      "en"
+    ],
+    "license": "apache-2.0",
+    "pipeline_tag": "image-text-to-text",
+    "library_name": "transformers"
+  },
+  "transformersInfo": {
+    "auto_model": "AutoModelForMultimodalLM",
+    "pipeline_tag": "image-text-to-text",
+    "processor": "AutoProcessor"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "bench_all_benchmarks.png"
+    },
+    {
+      "rfilename": "bench_c2c.png"
+    },
+    {
+      "rfilename": "bench_c2s.png"
+    },
+    {
+      "rfilename": "bench_omni.png"
+    },
+    {
+      "rfilename": "bench_pubcrop.png"
+    },
+    {
+      "rfilename": "bench_pubfull.png"
+    },
+    {
+      "rfilename": "bench_tvqa.png"
+    },
+    {
+      "rfilename": "bench_varex.png"
+    },
+    {
+      "rfilename": "chart.jpg"
+    },
+    {
+      "rfilename": "chat_template.jinja"
+    },
+    {
+      "rfilename": "config.json"
+    },
+    {
+      "rfilename": "configuration.py"
+    },
+    {
+      "rfilename": "downsampling.py"
+    },
+    {
+      "rfilename": "generation_config.json"
+    },
+    {
+      "rfilename": "invoice.png"
+    },
+    {
+      "rfilename": "merges.txt"
+    },
+    {
+      "rfilename": "model-00001-of-00002.safetensors"
+    },
+    {
+      "rfilename": "model-00002-of-00002.safetensors"
+    },
+    {
+      "rfilename": "model.safetensors.index.json"
+    },
+    {
+      "rfilename": "model.sig"
+    },
+    {
+      "rfilename": "modeling.py"
+    },
+    {
+      "rfilename": "preprocessor_config.json"
+    },
+    {
+      "rfilename": "processing.py"
+    },
+    {
+      "rfilename": "processor_config.json"
+    },
+    {
+      "rfilename": "special_tokens_map.json"
+    },
+    {
+      "rfilename": "table.png"
+    },
+    {
+      "rfilename": "tokenizer.json"
+    },
+    {
+      "rfilename": "tokenizer_config.json"
+    },
+    {
+      "rfilename": "vocab.json"
+    }
+  ],
+  "spaces": [
+    "ibm-granite/granite-vision-document-intelligence",
+    "umairranag/granite-vision-document-intelligence",
+    "Bensha6757/granite-doc-chat",
+    "Bensha6757/granite-doc-chat-docling",
+    "sdaijavad/granite-doc-chat",
+    "kdiemnguyen/template-granite-vision-document-intelligence"
+  ],
+  "createdAt": "2026-04-16T13:58:07.000Z",
+  "safetensors": {
+    "parameters": {
+      "BF16": 3997203904
+    },
+    "total": 3997203904
+  },
+  "usedStorage": 39831685443
+}

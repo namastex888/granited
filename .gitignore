@@ -1,0 +1,14 @@
+/target/
+/.venv*/
+__pycache__/
+*.pyc
+/state/
+/models/
+/bin/
+*.log
+.env
+
+
+# Added by cargo
+
+/target

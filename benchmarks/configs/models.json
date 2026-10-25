@@ -1,0 +1,11 @@
+{
+  "language": ["ibm-granite/granite-4.2-3b", "ibm-granite/granite-4.2-8b"],
+  "switch": ["ibm-granite/granite-switch-4.1-8b"],
+  "vision": ["ibm-granite/granite-vision-4.1-4b"],
+  "speech": ["ibm-granite/granite-speech-5.0-470m-turboctc", "ibm-granite/granite-speech-5.0-2b"],
+  "time_series": ["ibm-granite/granite-timeseries-ttm-r3", "ibm-granite/granite-timeseries-patchtst-fm-r2", "ibm-granite/granite-timeseries-flowstate-r1", "ibm-granite/granite-timeseries-tspulse-r1", "ibm-granite/granite-timeseries-ensemble-r1"],
+  "embedding": ["ibm-granite/granite-embedding-311m-multilingual-r2", "ibm-granite/granite-embedding-97m-multilingual-r2"],
+  "rerank": ["ibm-granite/granite-embedding-reranker-english-r2"],
+  "document": ["ibm-granite/granite-docling-258M"],
+  "guardian": ["ibm-granite/granite-guardian-4.1-8b"]
+}

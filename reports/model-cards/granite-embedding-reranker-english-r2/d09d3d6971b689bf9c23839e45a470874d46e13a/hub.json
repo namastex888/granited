@@ -1,0 +1,122 @@
+{
+  "_id": "6890eb18e6cbb92292fa123a",
+  "id": "ibm-granite/granite-embedding-reranker-english-r2",
+  "private": false,
+  "pipeline_tag": "text-ranking",
+  "library_name": "sentence-transformers",
+  "tags": [
+    "sentence-transformers",
+    "safetensors",
+    "modernbert",
+    "text-classification",
+    "granite",
+    "transformers",
+    "embeddings",
+    "mteb",
+    "text-embeddings-inference",
+    "text-ranking",
+    "en",
+    "arxiv:2508.21085",
+    "base_model:ibm-granite/granite-embedding-english-r2",
+    "base_model:finetune:ibm-granite/granite-embedding-english-r2",
+    "license:apache-2.0",
+    "endpoints_compatible",
+    "deploy:azure",
+    "region:us"
+  ],
+  "downloads": 9212,
+  "likes": 29,
+  "modelId": "ibm-granite/granite-embedding-reranker-english-r2",
+  "author": "ibm-granite",
+  "sha": "d09d3d6971b689bf9c23839e45a470874d46e13a",
+  "lastModified": "2025-11-06T15:57:11.000Z",
+  "gated": false,
+  "disabled": false,
+  "mask_token": "[MASK]",
+  "widgetData": [
+    {
+      "query": "Which planet is known as the Red Planet?",
+      "texts": [
+        "Venus is often called Earth's twin because of its similar size and proximity.",
+        "Mars, known for its reddish appearance, is often referred to as the Red Planet.",
+        "Jupiter, the largest planet in our solar system, has a prominent red spot.",
+        "Saturn, famous for its rings, is sometimes mistaken for the Red Planet."
+      ]
+    }
+  ],
+  "model-index": null,
+  "config": {
+    "architectures": [
+      "ModernBertForSequenceClassification"
+    ],
+    "model_type": "modernbert",
+    "tokenizer_config": {
+      "cls_token": "[CLS]",
+      "mask_token": "[MASK]",
+      "pad_token": "[PAD]",
+      "sep_token": "[SEP]",
+      "unk_token": "[UNK]"
+    }
+  },
+  "cardData": {
+    "license": "apache-2.0",
+    "language": [
+      "en"
+    ],
+    "base_model": [
+      "ibm-granite/granite-embedding-english-r2"
+    ],
+    "pipeline_tag": "text-ranking",
+    "library_name": "sentence-transformers",
+    "tags": [
+      "granite",
+      "transformers",
+      "embeddings",
+      "mteb",
+      "text-embeddings-inference"
+    ]
+  },
+  "transformersInfo": {
+    "auto_model": "AutoModelForSequenceClassification",
+    "pipeline_tag": "text-classification",
+    "processor": "AutoTokenizer"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "config.json"
+    },
+    {
+      "rfilename": "model.safetensors"
+    },
+    {
+      "rfilename": "special_tokens_map.json"
+    },
+    {
+      "rfilename": "tokenizer.json"
+    },
+    {
+      "rfilename": "tokenizer_config.json"
+    }
+  ],
+  "spaces": [
+    "ibm-granite/granite-embedding",
+    "lablab-ai-amd-developer-hackathon/riprap-nyc",
+    "msradam/riprap",
+    "yjoonjang/ReviewSearch"
+  ],
+  "createdAt": "2025-08-04T17:17:12.000Z",
+  "safetensors": {
+    "parameters": {
+      "F32": 149605633
+    },
+    "total": 149605633
+  },
+  "inference": "warm",
+  "usedStorage": 1795310124
+}

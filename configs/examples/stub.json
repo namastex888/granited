@@ -1,0 +1,30 @@
+{
+  "listen": "127.0.0.1:8410",
+  "host_id": "dev-stub",
+  "registry": "configs/registry.json",
+  "state_dir": "state/dev",
+  "api_key_env": "GRANITE_API_KEY",
+  "admin_key_env": "GRANITE_ADMIN_KEY",
+  "ram_reserve_bytes": 1073741824,
+  "accelerator_reserve_bytes": 0,
+  "deployments": [
+    {
+      "model": "granite-embedding-97m-multilingual-r2",
+      "backend": "embedding_native",
+      "base_url": "http://127.0.0.1:8422",
+      "revision": "835ad14087e140460703cf0fae09f97d469d65c2",
+      "artifact_repo": "ibm-granite/granite-embedding-97m-multilingual-r2",
+      "command": ["python3", "workers/stub.py", "--model", "granite-embedding-97m-multilingual-r2",
+                  "--revision", "835ad14087e140460703cf0fae09f97d469d65c2", "--port", "8422"],
+      "memory_bytes": 104857600,
+      "device": "cpu",
+      "health_path": "/healthz",
+      "identity_path": "/internal/metadata",
+      "runtime_manifest": "workers/stub.py",
+      "backend_build": "stub",
+      "max_concurrency": 4,
+      "load_timeout_seconds": 30
+    }
+  ],
+  "peers": []
+}

@@ -1,0 +1,76 @@
+{
+  "_id": "683ef1d62695302d716d125c",
+  "id": "ibm-granite/granite-timeseries-tspulse-r1",
+  "private": false,
+  "library_name": "granite-tsfm",
+  "tags": [
+    "granite-tsfm",
+    "safetensors",
+    "tspulse",
+    "time series",
+    "pretrained models",
+    "foundation models",
+    "time series foundation models",
+    "time-series",
+    "arxiv:2505.13033",
+    "license:apache-2.0",
+    "region:us"
+  ],
+  "downloads": 1703835,
+  "likes": 47,
+  "modelId": "ibm-granite/granite-timeseries-tspulse-r1",
+  "author": "ibm-granite",
+  "sha": "2e64fcdc2a06d3565dfadaf0065c0ab5055f80f2",
+  "lastModified": "2026-03-07T12:25:53.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {
+    "architectures": [
+      "TSPulseForReconstruction"
+    ],
+    "model_type": "tspulse"
+  },
+  "cardData": {
+    "license": "apache-2.0",
+    "tags": [
+      "time series",
+      "pretrained models",
+      "foundation models",
+      "time series foundation models",
+      "time-series"
+    ],
+    "library_name": "granite-tsfm"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "config.json"
+    },
+    {
+      "rfilename": "model.safetensors"
+    },
+    {
+      "rfilename": "tspulse_overview.webp"
+    }
+  ],
+  "spaces": [
+    "thu-sail-lab/Time_RCD",
+    "Silavon/Time_RCD",
+    "ssookra/apex-backend",
+    "sankalpsthakur/well-event-transfer-audit"
+  ],
+  "createdAt": "2025-06-03T13:00:06.000Z",
+  "safetensors": {
+    "parameters": {
+      "F32": 1084330
+    },
+    "total": 1084330
+  },
+  "usedStorage": 10875016
+}

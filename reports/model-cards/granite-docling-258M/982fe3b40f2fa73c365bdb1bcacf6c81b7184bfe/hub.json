@@ -1,0 +1,194 @@
+{
+  "_id": "682b8c278503c5bbf012e9a9",
+  "id": "ibm-granite/granite-docling-258M",
+  "private": false,
+  "pipeline_tag": "image-text-to-text",
+  "library_name": "transformers",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "idefics3",
+    "image-text-to-text",
+    "text-generation",
+    "documents",
+    "code",
+    "formula",
+    "chart",
+    "ocr",
+    "layout",
+    "table",
+    "document-parse",
+    "docling",
+    "granite",
+    "extraction",
+    "math",
+    "conversational",
+    "en",
+    "dataset:ds4sd/SynthCodeNet",
+    "dataset:ds4sd/SynthFormulaNet",
+    "dataset:ds4sd/SynthChartNet",
+    "dataset:HuggingFaceM4/DoclingMatix",
+    "arxiv:2501.17887",
+    "arxiv:2503.11576",
+    "arxiv:2305.03393",
+    "license:apache-2.0",
+    "endpoints_compatible",
+    "deploy:azure",
+    "region:us"
+  ],
+  "downloads": 295829,
+  "likes": 1285,
+  "modelId": "ibm-granite/granite-docling-258M",
+  "author": "ibm-granite",
+  "sha": "982fe3b40f2fa73c365bdb1bcacf6c81b7184bfe",
+  "lastModified": "2025-09-23T08:52:16.000Z",
+  "gated": false,
+  "disabled": false,
+  "widgetData": [
+    {
+      "text": "Hi, what can you help me with?"
+    },
+    {
+      "text": "What is 84 * 3 / 2?"
+    },
+    {
+      "text": "Tell me an interesting fact about the universe!"
+    },
+    {
+      "text": "Explain quantum computing in simple terms."
+    }
+  ],
+  "model-index": null,
+  "config": {
+    "architectures": [
+      "Idefics3ForConditionalGeneration"
+    ],
+    "model_type": "idefics3",
+    "tokenizer_config": {
+      "bos_token": "<|start_of_role|>",
+      "eos_token": "<|end_of_text|>",
+      "pad_token": "<|end_of_text|>",
+      "unk_token": "<|unk|>"
+    },
+    "chat_template_jinja": "{%- for message in messages -%}\n{{- '<|start_of_role|>' + message['role'] + '<|end_of_role|>' -}}\n{%- if message['content'] is string -%}\n{{- message['content'] -}}\n{%- else -%}\n{%- for part in message['content'] -%}\n{%- if part['type'] == 'text' -%}\n{{- part['text'] -}}\n{%- elif part['type'] == 'image' -%}\n{{- '<image>' -}}\n{%- endif -%}\n{%- endfor -%}\n{%- endif -%}\n{{- '<|end_of_text|>\n' -}}\n{%- endfor -%}\n{%- if add_generation_prompt -%}\n{{- '<|start_of_role|>assistant' -}}\n{%- if controls -%}{{- ' ' + controls | tojson() -}}{%- endif -%}\n{{- '<|end_of_role|>' -}}\n{%- endif -%}\n"
+  },
+  "cardData": {
+    "license": "apache-2.0",
+    "datasets": [
+      "ds4sd/SynthCodeNet",
+      "ds4sd/SynthFormulaNet",
+      "ds4sd/SynthChartNet",
+      "HuggingFaceM4/DoclingMatix"
+    ],
+    "tags": [
+      "text-generation",
+      "documents",
+      "code",
+      "formula",
+      "chart",
+      "ocr",
+      "layout",
+      "table",
+      "document-parse",
+      "docling",
+      "granite",
+      "extraction",
+      "math"
+    ],
+    "language": [
+      "en"
+    ],
+    "pipeline_tag": "image-text-to-text",
+    "library_name": "transformers"
+  },
+  "transformersInfo": {
+    "auto_model": "AutoModelForMultimodalLM",
+    "pipeline_tag": "image-text-to-text",
+    "processor": "AutoProcessor"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "added_tokens.json"
+    },
+    {
+      "rfilename": "assets/granite_docling_split_page.png"
+    },
+    {
+      "rfilename": "assets/new_arxiv.png"
+    },
+    {
+      "rfilename": "chat_template.jinja"
+    },
+    {
+      "rfilename": "config.json"
+    },
+    {
+      "rfilename": "generation_config.json"
+    },
+    {
+      "rfilename": "granite_docling.png"
+    },
+    {
+      "rfilename": "merges.txt"
+    },
+    {
+      "rfilename": "model.safetensors"
+    },
+    {
+      "rfilename": "preprocessor_config.json"
+    },
+    {
+      "rfilename": "processor_config.json"
+    },
+    {
+      "rfilename": "special_tokens_map.json"
+    },
+    {
+      "rfilename": "tokenizer.json"
+    },
+    {
+      "rfilename": "tokenizer_config.json"
+    },
+    {
+      "rfilename": "vocab.json"
+    }
+  ],
+  "spaces": [
+    "ibm-granite/granite-docling-258m-demo",
+    "ibm-granite/granite-docling-258M-WebGPU",
+    "VIDraft/global-llm-leaderboard",
+    "jairwaal/image",
+    "fmeres/granite-docling-demo",
+    "Secondprinsipal/image",
+    "yarenty/granite-docling-258m",
+    "akhaliq/granite-docling-258M",
+    "pjf67546/granite-docling-258M",
+    "malekradwan130/EbWFsZWtyYWR3YW4xMzBAZ21haWwuY",
+    "magicboris/granite-docling-258M-WebGPU",
+    "Ank0X0/granite-258M-WebGPU",
+    "raahinaez/doc",
+    "RanjanaBJ/ChatGPT_RBJ",
+    "armaansingh752k1/Image_generator_Docker",
+    "ssookra/apex-backend",
+    "Kietttqe/demoocr-docling-ocr",
+    "kazutab/mindmap-studio",
+    "Max-imillian/PaperCast",
+    "chris-sfbay/granite-docling-258m-demo",
+    "ananya23/granite-docling-258m-demo",
+    "StrangerInAStrangeLand/granite-docling-zerogpu"
+  ],
+  "createdAt": "2025-05-19T19:53:11.000Z",
+  "safetensors": {
+    "parameters": {
+      "BF16": 257517120
+    },
+    "total": 257517120
+  },
+  "usedStorage": 3045691426
+}

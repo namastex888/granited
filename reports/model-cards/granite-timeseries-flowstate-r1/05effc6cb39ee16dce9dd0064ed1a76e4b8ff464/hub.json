@@ -1,0 +1,83 @@
+{
+  "_id": "68c1ab1b160da860ce8c3f8d",
+  "id": "ibm-granite/granite-timeseries-flowstate-r1",
+  "private": false,
+  "pipeline_tag": "time-series-forecasting",
+  "tags": [
+    "safetensors",
+    "flowstate",
+    "time series",
+    "forecasting",
+    "pretrained models",
+    "foundation models",
+    "time series foundation models",
+    "time-series",
+    "state space model",
+    "ssm",
+    "time-series-forecasting",
+    "arxiv:2508.05287",
+    "license:apache-2.0",
+    "region:us"
+  ],
+  "downloads": 49344,
+  "likes": 29,
+  "modelId": "ibm-granite/granite-timeseries-flowstate-r1",
+  "author": "ibm-granite",
+  "sha": "05effc6cb39ee16dce9dd0064ed1a76e4b8ff464",
+  "lastModified": "2026-04-29T14:31:21.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {
+    "architectures": [
+      "FlowStateModel"
+    ],
+    "model_type": "flowstate"
+  },
+  "cardData": {
+    "license": "apache-2.0",
+    "pipeline_tag": "time-series-forecasting",
+    "tags": [
+      "time series",
+      "forecasting",
+      "pretrained models",
+      "foundation models",
+      "time series foundation models",
+      "time-series",
+      "state space model",
+      "ssm"
+    ]
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "config.json"
+    },
+    {
+      "rfilename": "figs/FlowState.png"
+    },
+    {
+      "rfilename": "figs/flowstate_performance.png"
+    },
+    {
+      "rfilename": "model.safetensors"
+    },
+    {
+      "rfilename": "model.sig"
+    }
+  ],
+  "spaces": [],
+  "createdAt": "2025-09-10T16:45:15.000Z",
+  "safetensors": {
+    "parameters": {
+      "F32": 9069312
+    },
+    "total": 9069312
+  },
+  "usedStorage": 111273190
+}

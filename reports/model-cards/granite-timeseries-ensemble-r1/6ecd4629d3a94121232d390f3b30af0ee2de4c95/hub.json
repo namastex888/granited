@@ -1,0 +1,82 @@
+{
+  "_id": "6ab40607f723e9e0ab3a621b",
+  "id": "ibm-granite/granite-timeseries-ensemble-r1",
+  "private": false,
+  "pipeline_tag": "time-series-forecasting",
+  "library_name": "granite-tsfm",
+  "tags": [
+    "granite-tsfm",
+    "granite_probabilistic_ensemble",
+    "time-series",
+    "forecasting",
+    "probabilistic-forecasting",
+    "ensemble",
+    "gift-eval",
+    "time-series-forecasting",
+    "dataset:Salesforce/GiftEval",
+    "arxiv:2508.05287",
+    "arxiv:2401.03955",
+    "arxiv:1106.1638",
+    "license:apache-2.0",
+    "region:us"
+  ],
+  "downloads": 281,
+  "likes": 7,
+  "modelId": "ibm-granite/granite-timeseries-ensemble-r1",
+  "author": "ibm-granite",
+  "sha": "6ecd4629d3a94121232d390f3b30af0ee2de4c95",
+  "lastModified": "2026-10-22T14:14:44.000Z",
+  "gated": false,
+  "disabled": false,
+  "model-index": null,
+  "config": {
+    "model_type": "granite_probabilistic_ensemble"
+  },
+  "cardData": {
+    "license": "apache-2.0",
+    "library_name": "granite-tsfm",
+    "pipeline_tag": "time-series-forecasting",
+    "tags": [
+      "time-series",
+      "forecasting",
+      "probabilistic-forecasting",
+      "ensemble",
+      "gift-eval"
+    ],
+    "datasets": [
+      "Salesforce/GiftEval"
+    ]
+  },
+  "siblings": [
+    {
+      "rfilename": "LICENSE"
+    },
+    {
+      "rfilename": "README.md"
+    },
+    {
+      "rfilename": "assets/gift_eval_ranks_granite.svg"
+    },
+    {
+      "rfilename": "config.json"
+    },
+    {
+      "rfilename": "model.sig"
+    },
+    {
+      "rfilename": "recipes/expanded-iqr/config.json"
+    },
+    {
+      "rfilename": "recipes/expanded-linear/config.json"
+    },
+    {
+      "rfilename": "recipes/granite-iqr/config.json"
+    },
+    {
+      "rfilename": "recipes/granite-linear/config.json"
+    }
+  ],
+  "spaces": [],
+  "createdAt": "2026-09-23T17:01:59.000Z",
+  "usedStorage": 0
+}

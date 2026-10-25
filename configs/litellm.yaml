@@ -1,0 +1,118 @@
+model_list:
+  - model_name: granite-speech-5.0-470m-turboctc
+    litellm_params:
+      model: openai/granite-speech-5.0-470m-turboctc
+      api_base: http://127.0.0.1:8310/v1
+      api_key: os.environ/GRANITE_API_KEY
+  - model_name: granite-4.2-3b
+    litellm_params:
+      model: openai/granite-4.2-3b
+      api_base: http://127.0.0.1:8310/v1
+      api_key: os.environ/GRANITE_API_KEY
+  - model_name: granite-4.2-8b
+    litellm_params:
+      model: openai/granite-4.2-8b
+      api_base: http://127.0.0.1:8310/v1
+      api_key: os.environ/GRANITE_API_KEY
+  - model_name: granite-vision-4.1-4b
+    litellm_params:
+      model: openai/granite-vision-4.1-4b
+      api_base: http://127.0.0.1:8310/v1
+      api_key: os.environ/GRANITE_API_KEY
+  - model_name: granite-embedding-97m-multilingual-r2
+    litellm_params:
+      model: openai/granite-embedding-97m-multilingual-r2
+      api_base: http://127.0.0.1:8310/v1
+      api_key: os.environ/GRANITE_API_KEY
+litellm_settings:
+  drop_params: false
+  request_timeout: 600
+  num_retries: 0
+  callbacks: []
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  pass_through_endpoints:
+    - path: /granite/v1/forecast
+      target: http://127.0.0.1:8310/v1/forecast
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/retrieval/rank
+      target: http://127.0.0.1:8310/v1/retrieval/rank
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/speech/transcribe
+      target: http://127.0.0.1:8310/v1/speech/transcribe
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/systemone
+      target: http://127.0.0.1:8310/v1/systemone
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/models
+      target: http://127.0.0.1:8310/v1/models
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/chat/completions
+      target: http://127.0.0.1:8310/v1/chat/completions
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/embeddings
+      target: http://127.0.0.1:8310/v1/embeddings
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/audio/transcriptions
+      target: http://127.0.0.1:8310/v1/audio/transcriptions
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/vision/extract
+      target: http://127.0.0.1:8310/v1/vision/extract
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/anomalies
+      target: http://127.0.0.1:8310/v1/anomalies
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/rerank
+      target: http://127.0.0.1:8310/v1/rerank
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/documents/parse
+      target: http://127.0.0.1:8310/v1/documents/parse
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/guardian/evaluate
+      target: http://127.0.0.1:8310/v1/guardian/evaluate
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
+    - path: /granite/v1/geospatial/predict
+      target: http://127.0.0.1:8310/v1/geospatial/predict
+      headers:
+        Authorization: os.environ/GRANITE_AUTHORIZATION
+      auth: true
+      forward_headers: false
