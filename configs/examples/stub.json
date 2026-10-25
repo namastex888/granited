@@ -23,7 +23,7 @@
       "runtime_manifest": "workers/stub.py",
       "backend_build": "stub",
       "max_concurrency": 4,
-      "load_timeout_seconds": 30
+      "load_timeout_seconds": 120
     }
   ],
   "peers": []

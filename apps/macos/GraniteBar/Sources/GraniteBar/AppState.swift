@@ -200,11 +200,11 @@ final class AppState: ObservableObject {
             return
         }
         let client = self.client
-        async let m = Result { try await client.adminModels() }
-        async let hs = Result { try await client.hosts() }
-        async let hw = Result { try await client.hardware() }
-        async let mt = Result { try await client.metrics() }
-        async let pm = Result { try await client.publicModels() }
+        async let m = attempt { try await client.adminModels() }
+        async let hs = attempt { try await client.hosts() }
+        async let hw = attempt { try await client.hardware() }
+        async let mt = attempt { try await client.metrics() }
+        async let pm = attempt { try await client.publicModels() }
         let (mr, hsr, hwr, mtr, pmr) = await (m, hs, hw, mt, pm)
 
         switch mr {
@@ -416,4 +416,10 @@ enum Format {
         guard let ms else { return "—" }
         return ms >= 1000 ? String(format: "%.1f s", ms / 1000) : String(format: "%.0f ms", ms)
     }
+}
+
+/// `Result(catching:)` for an async body; the standard library's async overload is newer than
+/// the Swift on current CI runners.
+func attempt<T>(_ body: () async throws -> T) async -> Result<T, Error> {
+    do { return .success(try await body()) } catch { return .failure(error) }
 }

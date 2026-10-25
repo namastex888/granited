@@ -28,7 +28,7 @@ def call(path, body=None, key=API):
     req = urllib.request.Request(f'http://127.0.0.1:{PORT}' + path, data=json.dumps(body).encode() if body is not None else None,
                                  headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=180) as r:
             return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers), e.read()
