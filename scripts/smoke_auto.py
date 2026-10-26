@@ -434,6 +434,36 @@ def main():
                 return resp.status, resp.headers.get('x-granite-truncated')
         check('a reply the speech worker cut at its cache length reaches the client marked x-granite-truncated',
               cut('TRUNCATE this') == (200, 'true') and cut('hello') == (200, None))
+
+        def speech_jobs():
+            req = urllib.request.Request(f'http://127.0.0.1:{r.port}/internal/activity?scope=local', headers={'Authorization': 'Bearer ' + ADMIN})
+            buckets = json.loads(urllib.request.urlopen(req, timeout=30).read())['hosts'][0]['buckets']
+            mine = [b for b in buckets if b['model'] == T17 and b['capability'] == 'speech_synthesis']
+            return (sum(b['succeeded'] for b in mine), sum(b['failed'] for b in mine),
+                    round(sum(b['units'].get('audio_seconds', 0) for b in mine), 3))
+
+        def evented(text):
+            data = json.dumps(dict(model=T17, input=text, stream=True, stream_format='events')).encode()
+            req = urllib.request.Request(f'http://127.0.0.1:{r.port}/v1/audio/speech', data,
+                                         {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                kind, raw = resp.headers.get('content-type', ''), resp.read().decode()
+            got = [(next(l[6:].strip() for l in e.splitlines() if l.startswith('event:')),
+                    json.loads(next(l[5:].strip() for l in e.splitlines() if l.startswith('data:'))))
+                   for e in raw.split('\n\n') if 'event:' in e]
+            return kind, got
+        before = speech_jobs()
+        kind, got = evented('hello')
+        check('stream_format events reaches the client as audio events then one done event, last',
+              kind.startswith('text/event-stream') and [k for k, _ in got] == ['audio', 'audio', 'done']
+              and got[-1][1]['error'] is None and got[-1][1]['audio_seconds'] == 1.0)
+        kind, got = evented('FAULT now')
+        check('a speech stream that fails midway still ends with done, carrying the error',
+              got and got[-1][0] == 'done' and got[-1][1]['error']['code'] == 'inference_failed')
+        after = speech_jobs()
+        print('   speech jobs before and after the events streams (succeeded, failed, audio s):', before, after)
+        check('activity counts the events stream by its done event: 1 succeeded with 1.0 s, 1 failed',
+              (after[0] - before[0], after[1] - before[1], round(after[2] - before[2], 3)) == (1, 1, 1.0))
     finally:
         r.close()
     r = Router('unified', models=(B3, T17, T06), auto=voice)

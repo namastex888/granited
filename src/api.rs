@@ -1604,6 +1604,8 @@ struct Events {
     usage: Option<Value>,
     /// Drop the usage-only event (the client did not ask for it).
     strip: bool,
+    /// Speech in `stream_format: "events"`: the seconds its final `done` event reports.
+    audio_seconds: Option<f64>,
     /// While an oversized event passes through: its last bytes, to find its end across chunks.
     skipping: Option<Vec<u8>>,
 }
@@ -1720,6 +1722,7 @@ impl Watch {
                 failed: false,
                 usage: None,
                 strip: strip_usage_chunk,
+                audio_seconds: None,
                 skipping: None,
             })
         } else {
@@ -1766,12 +1769,15 @@ impl Watch {
                 } else {
                     Bytes::new()
                 };
+                // Speech events carry seconds, not tokens: counted as completed, like a WAV body.
+                let metered = events.usage.is_some() || events.audio_seconds.is_none();
                 let reply = activity::Reply {
                     usage: events.usage,
                     streamed: true,
+                    audio_seconds: events.audio_seconds,
                     ..Default::default()
                 };
-                (true, Some(reply), rest)
+                (metered, Some(reply), rest)
             }
             Watch::Wav(wav, timing) => {
                 // A malformed or cut-off WAV has no seconds; only a body that is not RIFF at all
@@ -1836,6 +1842,19 @@ impl Events {
                 });
             let usage = data.as_ref().map(|d| &d["usage"]).filter(|u| u.is_object());
             self.failed |= failed;
+            let done = std::str::from_utf8(event).is_ok_and(|text| {
+                text.lines().any(|line| {
+                    line.strip_prefix("event:")
+                        .is_some_and(|kind| kind.trim() == "done")
+                })
+            });
+            if let Some(seconds) = data
+                .as_ref()
+                .and_then(|d| d["audio_seconds"].as_f64())
+                .filter(|_| done)
+            {
+                self.audio_seconds = Some(seconds);
+            }
             let usage_only = !failed
                 && usage.is_some()
                 && data

@@ -33,6 +33,10 @@ pub struct Synthesis {
     pub max_new_tokens: Option<u32>,
     /// `true`: a WAV header with an unknown length, then 16-bit PCM as it is generated.
     pub stream: Option<bool>,
+    /// With `stream`: `wav` (the default, above) or `events`: server-sent events, one `audio` event
+    /// per chunk (base64 16-bit PCM), then one `done` event, always last, with `truncated`,
+    /// `error`, `frames` and `audio_seconds`.
+    pub stream_format: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

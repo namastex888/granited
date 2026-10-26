@@ -56,8 +56,11 @@ def streaming(handler):
                 return
             if not isinstance(data, Events):
                 return super().send(status, data)
-            event = lambda e: b'data: ' + (e if isinstance(e, str) else json.dumps(e)).encode() + b'\n\n'
-            payload = b''.join(event(e) for e in data if isinstance(e, (str, dict)))
+            def event(e):
+                if isinstance(e, tuple):  # a named event: (kind, data)
+                    return f'event: {e[0]}\ndata: {json.dumps(e[1])}\n\n'.encode()
+                return b'data: ' + (e if isinstance(e, str) else json.dumps(e)).encode() + b'\n\n'
+            payload = b''.join(event(e) for e in data if isinstance(e, (str, dict, tuple)))
             # A broken stream promises more than it sends.
             promised = len(payload) + (1024 if any(e is BREAK for e in data) else 0)
             self.send_response(status)
@@ -181,6 +184,14 @@ class Stub:
                 seconds = None
             return dict(model=self.args.model, text=f'stub heard {len(audio)} bytes', audio_duration_seconds=seconds)
         if path == '/v1/audio/speech' and self.args.family == 'speech_synthesis':
+            if data.get('stream') and data.get('stream_format') == 'events':
+                # The worker's events format: audio events, then done, last, also after a failure.
+                pcm = base64.b64encode(bytes(2 * 12000)).decode()  # 0.5 s of silence at 24 kHz
+                audio = ('audio', dict(pcm_base64=pcm, sample_rate=24000, format='s16le'))
+                if 'FAULT' in data['input']:
+                    return Events([audio, ('done', dict(truncated=False, error=dict(code='inference_failed', message='RuntimeError'),
+                                                        frames=6, audio_seconds=0.5))])
+                return Events([audio, audio, ('done', dict(truncated=False, error=None, frames=12, audio_seconds=1.0))])
             if data.get('response_format') == 'wav':
                 return Cut(silence(0.75)) if 'TRUNCATE' in data['input'] else silence(0.75)
             return dict(model=self.args.model, stub_spoke=len(data['input']), references=len(data.get('references') or []))

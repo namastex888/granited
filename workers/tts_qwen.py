@@ -49,6 +49,7 @@ def parse():
     # at --max-input-chars 1000, 778 frames) x 1.25, rounded up to 64 (team-lead, 2026-10-26). The
     # library stops generating at this length without an error, so the input cap must stay in step.
     p.add_argument('--max-seq-len', type=int, default=1152, help='faster runtime: static cache length')
+    p.add_argument('--fault-after-chunks', type=int, default=0, help=argparse.SUPPRESS)  # tests: fail mid-stream
     args = p.parse_args()
     if args.runtime == 'faster' and args.device != 'cuda':
         p.error('--runtime faster captures CUDA graphs; it needs --device cuda')
@@ -273,8 +274,13 @@ def serve(args, model):
                 body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             except ValueError:
                 return self.error(400, 'invalid_schema', 'body is not JSON')
+            fmt = body.get('stream_format')
+            if fmt not in (None, 'wav', 'events') or (fmt is not None and not body.get('stream')):
+                return self.error(400, 'invalid_schema', "stream_format is 'wav' or 'events', with stream: true")
             if not lock.acquire(blocking=False):
                 return self.error(429, 'admission_busy', 'one synthesis at a time')
+            if body.get('stream') and fmt == 'events':
+                return self.evented(body, lock)
             if body.get('stream'):
                 return self.streamed(body, lock)
             try:
@@ -326,6 +332,48 @@ def serve(args, model):
                 # The headers left before generation ended, so a cut reply is reported in the trailer.
                 self.wfile.write(b'0\r\nX-Granite-Truncated: true\r\n\r\n' if cut else b'0\r\n\r\n')
                 self.wfile.flush()
+
+        def evented(self, body, lock):
+            """stream_format "events": server-sent events, one `audio` event per decoded chunk (base64
+            16-bit PCM), then one `done` event, always last, also after a failure mid-stream: whether
+            the static cache cut the reply, the error if any, and the frames and seconds sent."""
+            started, samples, chunks, failure, timing = False, 0, 0, None, {}
+
+            def event(kind, data):
+                nonlocal started
+                if not started:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/event-stream')
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.send_header('Transfer-Encoding', 'chunked')
+                    self.end_headers()
+                    started = True
+                self.chunk(f'event: {kind}\ndata: {json.dumps(data)}\n\n'.encode())
+
+            def emit(pcm):
+                nonlocal samples, chunks
+                if args.fault_after_chunks and chunks >= args.fault_after_chunks:
+                    raise RuntimeError('fault injected for a test')
+                event('audio', dict(pcm_base64=base64.b64encode(pcm).decode(), sample_rate=SAMPLE_RATE, format='s16le'))
+                samples, chunks = samples + len(pcm) // 2, chunks + 1
+
+            try:
+                timing = stream(model, args, body, emit)
+            except ValueError as e:
+                if not started:
+                    return self.error(400, 'invalid_schema', str(e))
+                failure = dict(code='invalid_schema', message=str(e))
+            except Exception as e:
+                print(f'stream failed: {type(e).__name__}', file=sys.stderr, flush=True)
+                if not started:
+                    return self.error(500, 'inference_failed', type(e).__name__)
+                failure = dict(code='inference_failed', message=type(e).__name__)
+            finally:
+                lock.release()
+            event('done', dict(truncated=failure is None and bool(timing.get('truncated')), error=failure,
+                               frames=samples // SAMPLES_PER_FRAME, audio_seconds=round(samples / SAMPLE_RATE, 3)))
+            self.wfile.write(b'0\r\n\r\n')
+            self.wfile.flush()
 
         def chunk(self, data):
             self.wfile.write(f'{len(data):x}\r\n'.encode() + data + b'\r\n')
