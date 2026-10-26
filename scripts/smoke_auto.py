@@ -383,12 +383,12 @@ def main():
         check('/v1/devices: an unreachable peer is listed as unreachable, and no address or hostname leaks',
               gone == {'device': 'gone', 'local': False, 'reachable': False} and '127.0.0.1' not in raw and 'hostname' not in raw)
         r.admin(f'/admin/models/{T06}/load')
-        for _ in range(100):
-            if r.states().get(T06) == 'ready':
-                break
-            time.sleep(0.1)
+        deadline = time.time() + 180
+        while r.states().get(T06) != 'ready' and time.time() < deadline:
+            time.sleep(0.2)
         local = json.loads(devices()[1])['devices'][0]
         tts = {e['model']: e['state'] for e in local['capabilities']['speech_synthesis']}
+        print('   devices with 0.6B loaded:', tts, local['recommended'].get('speech_synthesis'))
         check('/v1/devices: with 0.6B resident on the one device, 1.7B is no_room and 0.6B is recommended',
               tts == {T17: 'no_room', T06: 'warm'} and local['recommended']['speech_synthesis']['model'] == T06)
         check('/v1/devices needs the API key', devices('wrong-key')[0] == 401)

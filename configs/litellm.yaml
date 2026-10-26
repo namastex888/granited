@@ -1,34 +1,75 @@
+# The Mac gateway serves first (order 1). The HX gateway, through the Mac's :8333 tunnel, takes over
+# when the Mac gateway fails (order 2): LiteLLM retries once and cools a failed deployment for 30 s.
+# Needs GRANITE_HX_API_KEY in this environment (HX's own API key); LiteLLM will not start without it.
 model_list:
   - model_name: granite-speech-5.0-470m-turboctc
     litellm_params:
       model: openai/granite-speech-5.0-470m-turboctc
       api_base: http://127.0.0.1:8310/v1
       api_key: os.environ/GRANITE_API_KEY
+      order: 1
+  - model_name: granite-speech-5.0-470m-turboctc
+    litellm_params:
+      model: openai/granite-speech-5.0-470m-turboctc
+      api_base: http://127.0.0.1:8333/v1
+      api_key: os.environ/GRANITE_HX_API_KEY
+      order: 2
   - model_name: granite-4.2-3b
     litellm_params:
       model: openai/granite-4.2-3b
       api_base: http://127.0.0.1:8310/v1
       api_key: os.environ/GRANITE_API_KEY
+      order: 1
+  - model_name: granite-4.2-3b
+    litellm_params:
+      model: openai/granite-4.2-3b
+      api_base: http://127.0.0.1:8333/v1
+      api_key: os.environ/GRANITE_HX_API_KEY
+      order: 2
   - model_name: granite-4.2-8b
     litellm_params:
       model: openai/granite-4.2-8b
       api_base: http://127.0.0.1:8310/v1
       api_key: os.environ/GRANITE_API_KEY
+      order: 1
+  - model_name: granite-4.2-8b
+    litellm_params:
+      model: openai/granite-4.2-8b
+      api_base: http://127.0.0.1:8333/v1
+      api_key: os.environ/GRANITE_HX_API_KEY
+      order: 2
   - model_name: granite-vision-4.1-4b
     litellm_params:
       model: openai/granite-vision-4.1-4b
       api_base: http://127.0.0.1:8310/v1
       api_key: os.environ/GRANITE_API_KEY
+      order: 1
+  - model_name: granite-vision-4.1-4b
+    litellm_params:
+      model: openai/granite-vision-4.1-4b
+      api_base: http://127.0.0.1:8333/v1
+      api_key: os.environ/GRANITE_HX_API_KEY
+      order: 2
   - model_name: granite-embedding-97m-multilingual-r2
     litellm_params:
       model: openai/granite-embedding-97m-multilingual-r2
       api_base: http://127.0.0.1:8310/v1
       api_key: os.environ/GRANITE_API_KEY
+      order: 1
+  - model_name: granite-embedding-97m-multilingual-r2
+    litellm_params:
+      model: openai/granite-embedding-97m-multilingual-r2
+      api_base: http://127.0.0.1:8333/v1
+      api_key: os.environ/GRANITE_HX_API_KEY
+      order: 2
 litellm_settings:
   drop_params: false
   request_timeout: 600
-  num_retries: 0
+  num_retries: 1
   callbacks: []
+router_settings:
+  allowed_fails: 1
+  cooldown_time: 30
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   pass_through_endpoints:
