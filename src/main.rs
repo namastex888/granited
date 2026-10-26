@@ -70,6 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             10_000,
             std::time::Duration::from_secs(30 * 60),
         )),
+        usage: Default::default(),
+        clients: Default::default(),
         started: Instant::now(),
     });
     for peer in &config.peers {
@@ -84,6 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+    // Read operator-owned routers once before listening: until the first sync their models look
+    // unloaded, and the first requests after a restart were refused with capacity_unavailable.
+    service.refresh_hardware(true).await;
     let probe = service.clone();
     // Memory, pressure and VRAM every 5 s; operator-owned routers (often another team's service)
     // every 15 s. Admission re-measures on its own when the snapshot is older than a second.

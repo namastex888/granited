@@ -460,6 +460,103 @@ def main():
     finally:
         r.close()
 
+    # Usage counters: counted only by the node that ran the backend, from the backend's own usage.
+    def get(r, path, key=ADMIN):
+        req = urllib.request.Request(f'http://127.0.0.1:{r.port}{path}', headers={'Authorization': 'Bearer ' + key})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as e:
+            return e.code, None
+
+    def post_stream(url, model, text='hi', key=API, **body):
+        data = json.dumps(dict(model=model, messages=[dict(role='user', content=text)], stream=True,
+                               reasoning_effort='off', temperature=0, **body)).encode()
+        req = urllib.request.Request(f'{url}/v1/chat/completions', data,
+                                     {'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=180) as response:
+            return {k.lower(): v for k, v in response.headers.items()}, response.read()
+
+    def stream(r, model, **body):
+        raw = post_stream(f'http://127.0.0.1:{r.port}', model, **body)[1]
+        events = [e[len('data: '):] for e in raw.decode().split('\n\n') if e.startswith('data: ')]
+        return [e if e == '[DONE]' else json.loads(e) for e in events]
+
+    usage_only = lambda events: [e for e in events if isinstance(e, dict) and e.get('usage') and not e.get('choices')]
+    b = Router('cpu', models=(B8,), host='peer-b')
+    a = Router('cpu', models=(B3, SPEECH), host='node-a',
+               peers=[dict(id='peer-b', url=f'http://127.0.0.1:{b.port}', token_env='PEER_TOKEN', models=[B8])])
+    try:
+        head, raw = post_stream(f'http://127.0.0.1:{a.port}', B3)
+        check('a stripped stream carries no upstream Content-Length', 'content-length' not in head
+              and head.get('transfer-encoding') == 'chunked' and b'"usage"' not in raw)
+        events = stream(a, B3)
+        check('a stream whose client did not ask for usage gets no usage chunk, and still ends',
+              not usage_only(events) and events[-1] == '[DONE]' and len(events) == 4)
+        events = stream(a, B3, stream_options=dict(include_usage=True))
+        check('a client that asks for usage still gets the usage chunk', len(usage_only(events)) == 1
+              and usage_only(events)[0]['usage']['completion_tokens'] == 2)
+        a.chat(model=B3, reasoning_effort='off', temperature=0)
+        _, metrics = get(a, '/internal/metrics')
+        usage = metrics['usage']
+        check('tokens come from the backend usage: three streams and one buffered reply',
+              usage['models'].get(B3) == dict(requests_completed=4, requests_without_usage=0, prompt_tokens=10,
+                                             cached_prompt_tokens=3, output_tokens=7)
+              and usage['usage_reported'] is True and isinstance(usage['since_unix_ms'], int))
+        events = stream(a, B8, stream_options=dict(include_usage=True))
+        _, metrics = get(a, '/internal/metrics')
+        _, peer = get(b, '/internal/metrics')
+        status, hosts = get(a, '/internal/hosts')
+        total = sum(m.get(B8, {}).get('requests_completed', 0) for h in hosts['hosts'] for m in [h['usage']['models']])
+        check('a request forwarded to a peer is counted once, by the peer, never by the coordinator',
+              len(usage_only(events)) == 1 and B8 not in metrics['usage']['models']
+              and peer['usage']['models'][B8]['requests_completed'] == 1 and total == 1
+              and hosts['hosts'][1]['usage'] == peer['usage'])
+        _, raw = post_stream(f'http://127.0.0.1:{a.port}', B3, text='HUGE')
+        engine = json.loads((Path(a.state.name) / 'config.json').read_text())['deployments'][0]['base_url']
+        _, direct = post_stream(engine, B3, text='HUGE', stream_options=dict(include_usage=True))
+        events = direct.split(b'\n\n')
+        unasked = b'\n\n'.join(e for e in events if not (b'"choices": []' in e and b'"usage"' in e))
+        _, metrics = get(a, '/internal/metrics')
+        check('an event past the 64 KiB bound passes through byte for byte; the usage chunk after it is still read and dropped',
+              len(raw) > 256 << 10 and raw == unasked and raw != direct
+              and metrics['usage']['models'][B3]['requests_completed'] == 5
+              and metrics['usage']['models'][B3]['requests_without_usage'] == 0)
+        array = json.dumps(dict(model=B3, messages=[dict(role='user', content='ARRAY')], reasoning_effort='off', temperature=0)).encode()
+        replies = []
+        for url, key in ((f'http://127.0.0.1:{a.port}', API), (engine, API)):
+            req = urllib.request.Request(f'{url}/v1/chat/completions', array, {'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=60) as response:
+                replies.append((response.status, response.read()))
+        _, metrics = get(a, '/internal/metrics')
+        check('a 200 whose top level is an array passes intact and counts as a request without usage',
+              replies[0] == replies[1] and replies[0][0] == 200 and json.loads(replies[0][1]) == [dict(prompt_tokens=9)]
+              and metrics['usage']['models'][B3]['requests_without_usage'] == 1 and metrics['usage']['usage_reported'] is False)
+        status, _ = a.transcribe(SPEECH)
+        _, metrics = get(a, '/internal/metrics')
+        usage = metrics['usage']
+        check('a reply without usage counts the request and no tokens, and the block says so',
+              status == 200 and usage['models'][SPEECH] == dict(requests_completed=1, requests_without_usage=1,
+                                                               prompt_tokens=0, cached_prompt_tokens=0, output_tokens=0)
+              and usage['usage_reported'] is False)
+        check('usage stays admin-only', get(a, '/internal/metrics', key=API)[0] == 401
+              and get(a, '/internal/hosts', key=API)[0] == 401)
+    finally:
+        a.close()
+    try:
+        _, hosts = get(b, '/internal/hosts')
+        gone = Router('cpu', models=(B3,), host='node-c',
+                      peers=[dict(id='gone', url='http://127.0.0.1:9', token_env='PEER_TOKEN', models=[B8])])
+        try:
+            _, missing = get(gone, '/internal/hosts')
+        finally:
+            gone.close()
+        check('an unreachable peer has usage null and a usage_error',
+              missing['hosts'][1]['usage'] is None and missing['hosts'][1].get('usage_error')
+              and hosts['hosts'][0]['usage']['models'][B8]['requests_completed'] == 1)
+    finally:
+        b.close()
+
     # Both held: nothing may load.
     r = Router('unified', hold=True)
     try:

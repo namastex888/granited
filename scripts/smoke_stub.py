@@ -24,9 +24,9 @@ def free_port():
 PORT = free_port()
 
 
-def call(path, body=None, key=API):
+def call(path, body=None, key=API, headers=None):
     req = urllib.request.Request(f'http://127.0.0.1:{PORT}' + path, data=json.dumps(body).encode() if body is not None else None,
-                                 headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+                                 headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=180) as r:
             return r.status, dict(r.headers), r.read()
@@ -84,6 +84,25 @@ def main():
             checks.append(('keeps admin routes admin-only', status == 401))
             status, _, body = call('/internal/hosts', key=ADMIN)
             checks.append(('lists hosts for admin', status == 200 and json.loads(body)['hosts'][0]['reachable']))
+            status, _, body = call('/internal/metrics', key=ADMIN)
+            usage = json.loads(body)['usage'] if status == 200 else {}
+            checks.append(('counts usage for admin', usage.get('usage_reported') is True
+                           and usage.get('models', {}).get(model, {}).get('requests_completed') == 2))
+            checks.append(('keeps usage admin-only', call('/internal/metrics', key=API)[0] == 401))
+            for label in ['Bad Label!', 'x' * 33] + [f'app-{i:02}' for i in range(33)]:
+                call('/v1/embeddings', {'model': model, 'input': 'x'}, headers={'X-LocalFleet-Client': label})
+            status, _, body = call('/internal/metrics', key=ADMIN)
+            clients = json.loads(body)['clients'] if status == 200 else {}
+            seen = clients.get('last_seen_unix_ms', {})
+            checks.append(('ignores an invalid client label', 'Bad Label!' not in seen and 'x' * 33 not in seen))
+            checks.append(('a 33rd client label evicts the least recently seen', len(seen) == 32
+                           and 'app-00' not in seen and 'app-32' in seen and clients.get('window_seconds') == 300
+                           and clients.get('active') == {} and clients.get('unidentified_active') == 0))
+            status, _, body = call('/internal/hardware', key=ADMIN)
+            accelerators = json.loads(body)['accelerators'] if status == 200 else []
+            checks.append(('reports power with a scope, and null with a reason when unreadable', all(
+                {'watts', 'limit_watts', 'scope', 'source', 'reason'} <= set(a['power'])
+                and (a['power']['watts'] is not None or a['power']['reason']) for a in accelerators)))
             status, _, body = call('/v1/embeddings', {'model': 'granite-nonexistent', 'input': 'x'})
             checks.append(('fails unknown models with a structured error', status == 404 and b'unknown_model' in body))
         finally:

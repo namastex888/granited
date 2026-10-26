@@ -4,15 +4,15 @@ The LocalFleet app is the native macOS front end for LocalFleet and its granited
 
 ## Menu-bar item
 
-The icon is a template SF Symbol, so it follows the light or dark menu bar:
+The icon is the LocalFleet mark as a template image (`LocalFleet/Resources/MenuBarMark.png` and `@2x`), so it follows the light or dark menu bar. A bare binary run outside the `.app` falls back to the `cpu` SF Symbol.
 
 | Icon | Meaning |
 |------|---------|
-| `cpu`, dimmed | engine stopped or unreachable |
-| `cpu` | running and idle |
-| `cpu.fill` | serving (some worker has `active_requests > 0`) |
-| `cpu` with an arrow badge | a model is loading |
-| `cpu` with a warning badge | needs attention: memory stall above 5 %, an unreachable peer, or a failed worker |
+| mark, dimmed | engine stopped or unreachable |
+| mark | running and idle |
+| mark with a dot badge | serving (some worker has `active_requests > 0`) |
+| mark with an arrow badge | a model is loading |
+| mark with a warning badge | needs attention: memory stall above 5 %, an unreachable peer, or a failed worker |
 
 The menu is a standard macOS menu. It contains:
 
@@ -25,6 +25,23 @@ The menu is a standard macOS menu. It contains:
 **Polling:**
 - `GET /healthz` runs every 5 s.
 - The heavier endpoints run every 30 s, and every 5 s while Preferences is open: `/admin/models`, `/internal/hosts`, `/internal/hardware`, `/internal/metrics` and `/v1/models`. (`/internal/hosts` makes the router probe every peer.)
+
+## Notch monitor
+
+**Show Notch Monitor** in the menu (on by default) turns on a black strip to the left of the camera housing. It shows the brand mark and the completed-output rate. The strip covers nothing to the right of the camera. Hover or click it to open a panel below the menu bar with Production, Demand and Energy tabs. Escape or a click elsewhere closes it. Screens without a notch get a small pill at the top center.
+
+While the notch is shown, it polls `/internal/metrics` every 2 s, `/internal/hosts` every 5 s, and a local oMLX server's `/api/status` and `/admin/api/activity` every 2 s, if one is configured on loopback in `~/.omlx/settings.json`. Each source has its own freshness, and a slow source doesn't delay the others.
+
+- **Output:** taken only from usage counters an engine reports (`usage` in `/internal/metrics` and `/internal/hosts`). Engines that don't report yet show "Engine update pending".
+- **Rate:** completed output over the last 60 s.
+- **Today:** counted from the first observation, with gaps shown.
+- **Estimate:** appears only after an unbroken hour.
+- **Sources:** oMLX is a separate source, covering all of its clients, and is never added to the fleet.
+- **Apps:** counted only from requests that carry an `X-LocalFleet-Client` label. These labels are self-declared.
+- **Power:** reported per sensor, with its scope. Readings with different scopes are never summed.
+- **Memory:** in GiB.
+
+The app keeps only counts and timings, in UserDefaults.
 
 ## Preferences
 

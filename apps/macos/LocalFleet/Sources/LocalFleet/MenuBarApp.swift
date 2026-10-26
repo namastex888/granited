@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // No Dock icon even when run as a bare binary (the .app also sets LSUIElement).
         // Preferences switches to .regular while its window is open.
         NSApp.setActivationPolicy(.accessory)
+        // The notch monitor follows its saved switch (on by default); the menu item stays the fallback.
+        NotchController.shared.setEnabled(NotchController.shared.isEnabled)
         if LaunchOptions.current.openPreferences {
             DispatchQueue.main.async { PreferencesController.shared.show(pane: LaunchOptions.current.pane) }
         }
@@ -42,22 +44,23 @@ enum AppModel {
     static let shared = AppState()
 }
 
-/// Template SF Symbols, so the item follows the menu bar's light/dark appearance.
-/// Stopped: `cpu` dimmed. Idle: `cpu`. Serving: `cpu.fill`. Loading and attention keep the base
-/// symbol and add a small cut-out badge (arrow / exclamation mark) in the lower right corner.
+/// The LocalFleet mark as a template image (Resources/MenuBarMark.png + @2x, copied into the .app by
+/// build-app.sh), so the item follows the menu bar's light/dark appearance. A bare binary without the
+/// bundle falls back to the `cpu` SF Symbol. Stopped: the mark dimmed. Idle: the mark. Serving, loading
+/// and attention add a small cut-out badge (dot / arrow / exclamation mark) in the lower right corner.
 enum StatusIcon {
     static let size = NSSize(width: 20, height: 16)
 
     static func image(for glance: AppState.Glance) -> NSImage {
-        let baseName = glance == .serving ? "cpu.fill" : "cpu"
         let badgeName: String? = switch glance {
+        case .serving: "circle.fill"
         case .loading: "arrow.down.circle.fill"
         case .attention: "exclamationmark.triangle.fill"
         default: nil
         }
         let alpha: CGFloat = glance == .stopped ? 0.35 : 1
-        let base = symbol(baseName, points: 14, weight: .regular)
-        let badge = badgeName.flatMap { symbol($0, points: 8, weight: .bold) }
+        let base = Bundle.main.image(forResource: "MenuBarMark") ?? symbol("cpu", points: 14, weight: .regular)
+        let badge = badgeName.flatMap { symbol($0, points: $0 == "circle.fill" ? 6 : 8, weight: .bold) }
 
         let image = NSImage(size: size, flipped: false) { rect in
             guard let base else { return false }
@@ -84,6 +87,20 @@ enum StatusIcon {
     private static func symbol(_ name: String, points: CGFloat, weight: NSFont.Weight) -> NSImage? {
         NSImage(systemSymbolName: name, accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: points, weight: weight))
+    }
+}
+
+/// The app icon (Resources/LocalFleet.icns via CFBundleIconFile); the `cpu` settings glyph when run
+/// as a bare binary.
+struct BrandIcon: View {
+    let size: CGFloat
+
+    var body: some View {
+        if let icon = Bundle.main.image(forResource: "LocalFleet") {
+            Image(nsImage: icon).resizable().interpolation(.high).frame(width: size, height: size)
+        } else {
+            SettingsIcon(symbol: "cpu", tint: .accentColor, size: size)
+        }
     }
 }
 
@@ -118,6 +135,8 @@ struct MenuContent: View {
         }
 
         Divider()
+        Toggle("Show Notch Monitor", isOn: Binding(get: { NotchController.shared.isEnabled },
+                                                    set: { NotchController.shared.setEnabled($0) }))
         Button("Settings…") { PreferencesController.shared.show() }
             .keyboardShortcut(",")
         Divider()

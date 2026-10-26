@@ -160,9 +160,9 @@ struct EngineSidebarCard: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            SettingsIcon(symbol: "cpu", tint: .accentColor, size: 34)
+            BrandIcon(size: 34)
             VStack(alignment: .leading, spacing: 1) {
-                Text("granited").font(.headline)
+                Text("LocalFleet").font(.headline)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
@@ -171,10 +171,10 @@ struct EngineSidebarCard: View {
 
     private var subtitle: String {
         switch state.engine {
-        case .running: return state.hostID.map { "Running on \($0)" } ?? "Running"
-        case .stopped: return "Stopped"
-        case .unreachable: return "Not reachable"
-        case .unknown: return "Checking…"
+        case .running: return state.hostID.map { "granited · Running on \($0)" } ?? "granited · Running"
+        case .stopped: return "granited · Stopped"
+        case .unreachable: return "granited · Not reachable"
+        case .unknown: return "granited · Checking…"
         }
     }
 }

@@ -248,6 +248,103 @@ pub struct Service {
     pub rejections: Mutex<BTreeMap<String, BTreeMap<String, u64>>>,
     /// The model each `x-granite-conversation` was served by, for `auto`.
     pub conversations: Mutex<localfleet_route::Conversations>,
+    /// Backend-reported usage of the requests this node ran, by model (`/internal/metrics`).
+    pub usage: UsageLog,
+    /// Requests that entered the fleet here, by their self-declared `x-localfleet-client`.
+    pub clients: Mutex<Clients>,
+}
+
+/// Counts only, by a label any caller may claim: never used for routing, admission or auth.
+#[derive(Default)]
+pub struct Clients {
+    /// Label to (requests in flight, last seen in unix ms).
+    labels: BTreeMap<String, (u64, u64)>,
+    unidentified: u64,
+}
+
+const CLIENT_LABELS: usize = 32;
+const CLIENT_WINDOW_SECONDS: u64 = 300;
+
+fn unix_ms() -> u64 {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    now.unwrap_or_default().as_millis() as u64
+}
+
+/// A label is 1-32 characters from a-z, 0-9, '.', '_' and '-'; anything else is unidentified.
+pub fn client_label(raw: Option<&str>) -> Option<String> {
+    raw.filter(|l| {
+        (1..=32).contains(&l.len())
+            && l.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+    })
+    .map(str::to_owned)
+}
+
+impl Clients {
+    pub fn start(&mut self, label: Option<&str>) {
+        let Some(label) = label else {
+            self.unidentified = self.unidentified.saturating_add(1);
+            return;
+        };
+        if !self.labels.contains_key(label) && self.labels.len() >= CLIENT_LABELS {
+            // The least recently seen label goes, an idle one before one with requests in flight.
+            let oldest = self
+                .labels
+                .iter()
+                .min_by_key(|(_, (active, seen))| (*active > 0, *seen))
+                .map(|(l, _)| l.clone());
+            if let Some(oldest) = oldest {
+                self.labels.remove(&oldest);
+            }
+        }
+        let entry = self.labels.entry(label.to_owned()).or_default();
+        *entry = (entry.0.saturating_add(1), unix_ms());
+    }
+
+    pub fn finish(&mut self, label: Option<&str>) {
+        match label.and_then(|l| self.labels.get_mut(l)) {
+            Some(entry) => *entry = (entry.0.saturating_sub(1), unix_ms()),
+            None if label.is_none() => self.unidentified = self.unidentified.saturating_sub(1),
+            None => {}
+        }
+    }
+
+    pub fn block(&self) -> Value {
+        let active: BTreeMap<_, _> = self
+            .labels
+            .iter()
+            .filter(|(_, (n, _))| *n > 0)
+            .map(|(l, (n, _))| (l, n))
+            .collect();
+        let seen: BTreeMap<_, _> = self.labels.iter().map(|(l, (_, t))| (l, t)).collect();
+        json!({"window_seconds":CLIENT_WINDOW_SECONDS,"active":active,
+            "unidentified_active":self.unidentified,"last_seen_unix_ms":seen})
+    }
+}
+
+pub struct UsageLog {
+    since_unix_ms: u64,
+    models: Mutex<BTreeMap<String, Usage>>,
+}
+
+impl Default for UsageLog {
+    fn default() -> Self {
+        UsageLog {
+            since_unix_ms: unix_ms(),
+            models: Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+/// Counters only: no prompt, completion or audio is kept. Tokens come from the backend's own
+/// `usage`, never from counting chunks.
+#[derive(Clone, Copy, Default, Serialize)]
+pub struct Usage {
+    pub requests_completed: u64,
+    pub requests_without_usage: u64,
+    pub prompt_tokens: u64,
+    pub cached_prompt_tokens: u64,
+    pub output_tokens: u64,
 }
 
 impl Service {
@@ -260,6 +357,45 @@ impl Service {
             .or_default()
             .entry(code.to_owned())
             .or_default() += 1;
+    }
+
+    /// Counts one request this node's backend completed. A reply without a `usage` object counts
+    /// as a request with no tokens.
+    pub fn count_usage(&self, model: &str, usage: Option<&Value>) {
+        let tokens = |v: Option<&Value>| v.and_then(Value::as_u64).unwrap_or(0);
+        let reported =
+            usage.filter(|u| u["prompt_tokens"].is_u64() || u["completion_tokens"].is_u64());
+        let mut all = self.usage.models.lock().unwrap();
+        let c = all.entry(model.to_owned()).or_default();
+        c.requests_completed = c.requests_completed.saturating_add(1);
+        match reported {
+            Some(u) => {
+                c.prompt_tokens = c
+                    .prompt_tokens
+                    .saturating_add(tokens(u.get("prompt_tokens")));
+                c.cached_prompt_tokens = c
+                    .cached_prompt_tokens
+                    .saturating_add(tokens(u.pointer("/prompt_tokens_details/cached_tokens")));
+                c.output_tokens = c
+                    .output_tokens
+                    .saturating_add(tokens(u.get("completion_tokens")));
+            }
+            None => c.requests_without_usage = c.requests_without_usage.saturating_add(1),
+        }
+    }
+
+    /// Counts a completed reply that carries no token usage by its nature (audio); it does not
+    /// count as missing usage.
+    pub fn count_completed(&self, model: &str) {
+        let mut all = self.usage.models.lock().unwrap();
+        let c = all.entry(model.to_owned()).or_default();
+        c.requests_completed = c.requests_completed.saturating_add(1);
+    }
+
+    pub fn usage_block(&self) -> Value {
+        let all = self.usage.models.lock().unwrap();
+        json!({"since_unix_ms":self.usage.since_unix_ms,
+            "usage_reported":all.values().all(|u| u.requests_without_usage == 0),"models":*all})
     }
 
     pub fn resolve_model<'a>(&'a self, id: &'a str) -> &'a str {
@@ -1622,7 +1758,7 @@ pub fn new_workers(specs: Vec<Deployment>) -> BTreeMap<String, Arc<Worker>> {
 
 #[cfg(test)]
 mod tests {
-    use super::score;
+    use super::{Clients, client_label, score};
     use serde_json::json;
 
     fn host(worker: serde_json::Value, available: u64) -> serde_json::Value {
@@ -1710,5 +1846,32 @@ mod tests {
         one["occupied_slots"] = json!(1);
         assert!(score(&host(one.clone(), 1 << 40), "m", "chat", false).is_some());
         assert!(score(&host(one, 1 << 40), "m", "chat", true).is_none());
+    }
+
+    #[test]
+    fn client_labels_are_checked_and_the_least_recently_seen_idle_one_goes() {
+        assert_eq!(
+            client_label(Some("my-app_1.0")).as_deref(),
+            Some("my-app_1.0")
+        );
+        for bad in ["", "My-App", "a b", "x".repeat(33).as_str()] {
+            assert!(client_label(Some(bad)).is_none(), "{bad}");
+        }
+        let mut clients = Clients::default();
+        clients.start(Some("busy"));
+        for i in 0..31 {
+            clients.start(Some(&format!("app-{i:02}")));
+            clients.finish(Some(&format!("app-{i:02}")));
+        }
+        clients.start(Some("new"));
+        clients.start(None);
+        let block = clients.block();
+        assert!(block["last_seen_unix_ms"].get("app-00").is_none());
+        assert_eq!(block["last_seen_unix_ms"].as_object().unwrap().len(), 32);
+        assert_eq!(block["active"], json!({"busy": 1, "new": 1}));
+        assert_eq!(block["unidentified_active"], 1);
+        clients.finish(None);
+        clients.finish(Some("app-00"));
+        assert_eq!(clients.block()["unidentified_active"], 0);
     }
 }

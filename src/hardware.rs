@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 use std::{
+    path::Path,
     process::Command,
     sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -42,6 +43,13 @@ pub fn collect() -> Value {
             .cloned()
             .unwrap_or_default(),
     );
+    drop_duplicates(&mut accelerators);
+    // Power is read on every snapshot; the inventory above is cached for a minute.
+    for accelerator in &mut accelerators {
+        if accelerator.get("power").is_none() {
+            accelerator["power"] = device_power(accelerator);
+        }
+    }
     let mut issues: Vec<Value> = value["issues"].as_array().cloned().unwrap_or_default();
     if accelerators.is_empty() {
         issues.push(json!(
@@ -98,27 +106,114 @@ pub fn memory_stall_percent() -> Option<f64> {
 }
 
 fn nvidia() -> Vec<Value> {
-    let mut accelerators = Vec::new();
-    if let Some(csv) = output(
+    output(
         "nvidia-smi",
         &[
-            "--query-gpu=name,uuid,pci.device_id,memory.total,memory.free,driver_version,compute_cap",
+            "--query-gpu=name,uuid,pci.device_id,memory.total,memory.free,driver_version,compute_cap,power.draw,power.limit",
             "--format=csv,noheader,nounits",
         ],
-    ) {
-        for line in csv.lines() {
-            let f: Vec<_> = line.split(',').map(str::trim).collect();
-            if f.len() == 7 {
-                accelerators.push(
-                    json!({"vendor":"nvidia", "name":f[0], "uuid":f[1], "device_id":f[2],
-                    "total_memory_bytes":f[3].parse::<u64>().ok().map(|v| v*1024*1024),
-                    "available_memory_bytes":f[4].parse::<u64>().ok().map(|v| v*1024*1024),
-                    "driver":f[5], "compute_capability":f[6], "memory_kind":"dedicated"}),
-                );
-            }
-        }
+    )
+    .map(|csv| csv.lines().filter_map(nvidia_line).collect())
+    .unwrap_or_default()
+}
+
+fn nvidia_line(line: &str) -> Option<Value> {
+    let f: Vec<_> = line.split(',').map(str::trim).collect();
+    (f.len() == 9).then(|| {
+        json!({"vendor":"nvidia", "name":f[0], "uuid":f[1], "device_id":f[2],
+        "total_memory_bytes":f[3].parse::<u64>().ok().map(|v| v*1024*1024),
+        "available_memory_bytes":f[4].parse::<u64>().ok().map(|v| v*1024*1024),
+        "driver":f[5], "compute_capability":f[6], "memory_kind":"dedicated",
+        "power":power(
+            f[7].parse().map_err(|_| format!("nvidia-smi reported power.draw as {}", f[7])),
+            f[8].parse().ok(),
+            "GPU board, all workloads",
+            "nvidia-smi power.draw",
+        )})
+    })
+}
+
+/// One reading with what it covers. An unreadable sensor is null with the reason, never 0.
+fn power(watts: Result<f64, String>, limit: Option<f64>, scope: &str, source: &str) -> Value {
+    let (watts, reason) = match watts {
+        Ok(watts) => (Some(watts), None),
+        Err(reason) => (None, Some(reason)),
+    };
+    json!({"watts":watts, "limit_watts":limit, "scope":scope, "source":source, "reason":reason})
+}
+
+fn device_power(accelerator: &Value) -> Value {
+    if accelerator["vendor"] == "apple" {
+        return power(
+            Err("powermetrics needs root; LocalFleet does not run it".into()),
+            None,
+            "Apple SoC",
+            "powermetrics",
+        );
     }
-    accelerators
+    if accelerator["class"] == "/sys/class/drm" && accelerator["vendor_pci_id"] == "0x1002" {
+        let node = accelerator["node"].as_str().unwrap_or("");
+        return hwmon_power(&Path::new("/sys/class/drm").join(node).join("device"));
+    }
+    power(
+        Err("no power sensor is read for this device".into()),
+        None,
+        "not measured",
+        "none",
+    )
+}
+
+/// amdgpu's hwmon `power1_average`, in microwatts, as an unprivileged user can read it.
+fn hwmon_power(device: &Path) -> Value {
+    let (scope, source) = ("AMDGPU SoC sensor, not wall power", "hwmon power1_average");
+    let mut dirs: Vec<_> = std::fs::read_dir(device.join("hwmon"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("power1_average").exists())
+        .collect();
+    dirs.sort();
+    let Some(dir) = dirs.first() else {
+        return power(
+            Err("no hwmon power1_average for this device".into()),
+            None,
+            scope,
+            source,
+        );
+    };
+    let read = |name: &str| {
+        std::fs::read_to_string(dir.join(name))
+            .map_err(|e| format!("{name} unreadable: {e}"))?
+            .trim()
+            .parse::<f64>()
+            .map(|microwatts| microwatts / 1e6)
+            .map_err(|e| format!("{name} unparsable: {e}"))
+    };
+    power(
+        read("power1_average"),
+        read("power1_cap").ok(),
+        scope,
+        source,
+    )
+}
+
+/// A drm card that nvidia-smi already lists is the same physical device; keep the named entry.
+/// nvidia-smi's `pci.device_id` is the device id followed by the vendor id (`0x280510DE`).
+fn drop_duplicates(accelerators: &mut Vec<Value>) {
+    let named: Vec<String> = accelerators
+        .iter()
+        .filter(|a| a["vendor"] == "nvidia")
+        .filter_map(|a| a["device_id"].as_str().map(str::to_ascii_lowercase))
+        .collect();
+    accelerators.retain(|a| {
+        let (Some(device), Some(vendor)) = (a["device_id"].as_str(), a["vendor_pci_id"].as_str())
+        else {
+            return true;
+        };
+        let id = format!("{device}{}", vendor.trim_start_matches("0x")).to_ascii_lowercase();
+        a["class"] != "/sys/class/drm" || !named.contains(&id)
+    });
 }
 
 fn inventory() -> Value {
@@ -179,4 +274,55 @@ fn inventory() -> Value {
         "runtime_versions":{"llama_cpp":output("llama-server", &["--version"]),
             "nvidia_smi":output("nvidia-smi", &["--query-gpu=driver_version", "--format=csv,noheader"])},
         "issues":issues})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{drop_duplicates, hwmon_power, nvidia_line};
+    use serde_json::json;
+
+    #[test]
+    fn nvidia_power_is_null_with_a_reason_when_not_reported() {
+        let gpu =
+            nvidia_line("RTX, GPU-1, 0x280510DE, 16380, 15000, 580.1, 8.9, 23.45, 150.00").unwrap();
+        assert_eq!(gpu["power"]["watts"], 23.45);
+        assert_eq!(gpu["power"]["limit_watts"], 150.0);
+        assert!(gpu["power"]["reason"].is_null());
+        let gpu =
+            nvidia_line("RTX, GPU-1, 0x280510DE, 16380, 15000, 580.1, 8.9, [N/A], [N/A]").unwrap();
+        assert!(gpu["power"]["watts"].is_null() && gpu["power"]["limit_watts"].is_null());
+        assert_eq!(
+            gpu["power"]["reason"],
+            "nvidia-smi reported power.draw as [N/A]"
+        );
+    }
+
+    #[test]
+    fn hwmon_power_reads_microwatts_and_names_a_missing_sensor() {
+        let device = std::env::temp_dir().join(format!("hwmon-test-{}", std::process::id()));
+        let hwmon = device.join("hwmon/hwmon3");
+        std::fs::create_dir_all(&hwmon).unwrap();
+        let missing = hwmon_power(&device);
+        assert!(missing["watts"].is_null());
+        assert_eq!(missing["reason"], "no hwmon power1_average for this device");
+        std::fs::write(hwmon.join("power1_average"), "15250000\n").unwrap();
+        let read = hwmon_power(&device);
+        std::fs::remove_dir_all(&device).unwrap();
+        assert_eq!(read["watts"], 15.25);
+        assert!(read["limit_watts"].is_null() && read["reason"].is_null());
+        assert_eq!(read["scope"], "AMDGPU SoC sensor, not wall power");
+    }
+
+    #[test]
+    fn a_drm_card_listed_by_nvidia_smi_is_reported_once() {
+        let mut accelerators = vec![
+            json!({"vendor":"nvidia","device_id":"0x280510DE"}),
+            json!({"class":"/sys/class/drm","vendor_pci_id":"0x10de","device_id":"0x2805"}),
+            json!({"class":"/sys/class/drm","vendor_pci_id":"0x1002","device_id":"0x150e"}),
+            json!({"class":"/sys/class/accel","vendor_pci_id":"0x1022","device_id":"0x17f0"}),
+        ];
+        drop_duplicates(&mut accelerators);
+        assert_eq!(accelerators.len(), 3);
+        assert!(accelerators.iter().all(|a| a["vendor_pci_id"] != "0x10de"));
+    }
 }

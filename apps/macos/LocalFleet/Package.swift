@@ -8,6 +8,11 @@ let package = Package(
         .executableTarget(
             name: "LocalFleet",
             path: "Sources/LocalFleet"
+        ),
+        .testTarget(
+            name: "LocalFleetTests",
+            dependencies: ["LocalFleet"],
+            path: "Tests/LocalFleetTests"
         )
     ]
 )

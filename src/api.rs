@@ -4,7 +4,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    body::Body,
+    body::{Body, Bytes, HttpBody},
     extract::{
         DefaultBodyLimit, FromRequest, Multipart, OriginalUri, Path, Request, State,
         rejection::JsonRejection,
@@ -69,6 +69,29 @@ fn equal(a: &[u8], b: &[u8]) -> bool {
     mismatch == 0
 }
 
+/// Holds a request in its client's in-flight count until its reply's body is done.
+struct ClientGuard {
+    service: Arc<Service>,
+    label: Option<String>,
+}
+
+impl ClientGuard {
+    fn new(service: &Arc<Service>, label: Option<String>) -> Self {
+        service.clients.lock().unwrap().start(label.as_deref());
+        ClientGuard {
+            service: service.clone(),
+            label,
+        }
+    }
+}
+
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        let mut clients = self.service.clients.lock().unwrap();
+        clients.finish(self.label.as_deref());
+    }
+}
+
 async fn guard(State(service): State<Arc<Service>>, mut request: Request, next: Next) -> Response {
     let started = Instant::now();
     let path = request.uri().path().to_owned();
@@ -95,6 +118,26 @@ async fn guard(State(service): State<Arc<Service>>, mut request: Request, next: 
     let authorized = public
         || equal(token.as_bytes(), admin_key.as_bytes())
         || (!admin && equal(token.as_bytes(), api_key.as_bytes()));
+    // The client label is counted on the node the request entered (no hop) and never passed on.
+    let label = crate::lifecycle::client_label(
+        request
+            .headers()
+            .get("x-localfleet-client")
+            .and_then(|v| v.to_str().ok()),
+    );
+    request.headers_mut().remove("x-localfleet-client");
+    let entry = request
+        .headers()
+        .get("x-granite-hop")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0)
+        == 0;
+    let client = (authorized
+        && entry
+        && request.method() == axum::http::Method::POST
+        && path.starts_with("/v1/"))
+    .then(|| ClientGuard::new(&service, label));
     let mut response = if authorized {
         next.run(request).await
     } else {
@@ -136,6 +179,17 @@ async fn guard(State(service): State<Arc<Service>>, mut request: Request, next: 
             ))
             .unwrap(),
         );
+    }
+    // A streamed reply stays in flight until its body ends; a buffered one is done here.
+    if let Some(client) = client
+        && HttpBody::size_hint(response.body()).exact().is_none()
+    {
+        let (parts, body) = response.into_parts();
+        let body = body.into_data_stream().map(move |chunk| {
+            let _ = &client;
+            chunk
+        });
+        response = Response::from_parts(parts, Body::from_stream(body));
     }
     tracing::info!(
         request_id = id,
@@ -786,27 +840,55 @@ async fn hardware(State(s): State<Arc<Service>>) -> Json<Value> {
     Json(s.hardware().await)
 }
 async fn hosts(State(s): State<Arc<Service>>) -> Json<Value> {
-    let mut values =
-        vec![json!({"host":s.config.host_id,"reachable":true,"hardware":s.hardware().await})];
+    let mut values = vec![
+        json!({"host":s.config.host_id,"reachable":true,"hardware":s.hardware().await,"usage":s.usage_block(),
+            "clients":s.clients.lock().unwrap().block()}),
+    ];
     // Probe peers concurrently so one unreachable node does not serialize the whole report.
     values.extend(
         futures_util::future::join_all(s.config.peers.iter().map(|peer| async {
+            let get = |path: &str| {
+                s.client
+                    .get(format!("{}{path}", peer.url))
+                    .bearer_auth(std::env::var(&peer.token_env).unwrap_or_default())
+                    .timeout(Duration::from_secs(5))
+                    .send()
+            };
             let started = Instant::now();
-            let result = s
-                .client
-                .get(format!("{}/internal/hardware", peer.url))
-                .bearer_auth(std::env::var(&peer.token_env).unwrap_or_default())
-                .timeout(Duration::from_secs(5))
-                .send()
-                .await;
-            match result {
+            let (result, metrics) =
+                futures_util::future::join(get("/internal/hardware"), get("/internal/metrics"))
+                    .await;
+            let mut entry = match result {
                 Ok(r) if r.status().is_success() => match r.json::<Value>().await {
                     Ok(hw)=>json!({"host":peer.id,"reachable":true,"round_trip_ms":started.elapsed().as_secs_f64()*1000.,"hardware":hw}),
                     Err(e)=>json!({"host":peer.id,"reachable":false,"error":e.to_string()}),
                 },
                 Ok(r)=>json!({"host":peer.id,"reachable":false,"status":r.status().as_u16()}),
                 Err(e)=>json!({"host":peer.id,"reachable":false,"error":e.to_string()}),
+            };
+            // Each host reports only what it ran, so one entry per host never double counts.
+            let metrics = match metrics {
+                Ok(r) if r.status().is_success() => {
+                    r.json::<Value>().await.map_err(|e| e.to_string())
+                }
+                Ok(r) => Err(format!("metrics answered {}", r.status().as_u16())),
+                Err(e) => Err(e.to_string()),
+            };
+            for key in ["usage", "clients"] {
+                match &metrics {
+                    Ok(m) if m[key].is_object() => entry[key] = m[key].clone(),
+                    Ok(_) => {
+                        entry[key] = Value::Null;
+                        entry[format!("{key}_error")] =
+                            json!(format!("peer reports no {key} (older engine)"));
+                    }
+                    Err(reason) => {
+                        entry[key] = Value::Null;
+                        entry[format!("{key}_error")] = json!(reason);
+                    }
+                }
             }
+            entry
         }))
         .await,
     );
@@ -815,7 +897,7 @@ async fn hosts(State(s): State<Arc<Service>>) -> Json<Value> {
 async fn metrics(State(s): State<Arc<Service>>) -> Json<Value> {
     Json(
         json!({"uptime_seconds":s.started.elapsed().as_secs(),"workers":s.worker_status(),"operations":s.operations.lock().unwrap().values().cloned().collect::<Vec<_>>(),
-            "rejections":*s.rejections.lock().unwrap()}),
+            "rejections":*s.rejections.lock().unwrap(),"usage":s.usage_block(),"clients":s.clients.lock().unwrap().block()}),
     )
 }
 async fn model_operation(
@@ -836,7 +918,7 @@ async fn model_operation(
             .send()
             .await
         {
-            Ok(r) => forward_response(r, None).await,
+            Ok(r) => forward_response(r, None, None).await,
             Err(e) => failure("host_unreachable", e.to_string()).into_response(),
         };
     }
@@ -907,7 +989,7 @@ async fn cancel(State(s): State<Arc<Service>>, Path(id): Path<String>) -> Respon
             .await
             && r.status() != StatusCode::NOT_FOUND
         {
-            return forward_response(r, None).await;
+            return forward_response(r, None, None).await;
         }
     }
     failure("unknown_operation", id).into_response()
@@ -1204,6 +1286,19 @@ async fn run(
         // Peers are LocalFleet nodes that apply the budget themselves; only the last hop adds it.
         let engine_body =
             (local && path == "/v1/chat/completions").then(|| engine_chat_body(&value, &backend));
+        // A stream reports usage only when asked (llama.cpp and vLLM honour this); the final
+        // usage-only chunk is dropped again unless the client asked for it too.
+        let stream_usage = engine_body.is_some()
+            && value["stream"] == true
+            && value
+                .get("stream_options")
+                .is_none_or(|o| o.is_null() || o.is_object());
+        let engine_body = engine_body.map(|mut body| {
+            if stream_usage {
+                body["stream_options"]["include_usage"] = json!(true);
+            }
+            body
+        });
         let mut request = s
             .client
             .post(format!("{url}{forward_path}"))
@@ -1230,6 +1325,9 @@ async fn run(
             Ok(upstream) if normalize_vision && upstream.status().is_success() => {
                 let parsed = upstream.json::<Value>().await;
                 drop(lease);
+                if let Ok(output) = &parsed {
+                    s.count_usage(id, output.get("usage"));
+                }
                 match parsed {
                     Ok(output)=>Json(json!({"text":output["choices"][0]["message"]["content"],"usage":output["usage"],"model":id,"revision":revision,"structural_quality":null})).into_response(),
                     Err(e)=>failure("backend_error",e.to_string()).into_response(),
@@ -1238,13 +1336,25 @@ async fn run(
             Ok(upstream) if count_reasoning && upstream.status().is_success() => {
                 let parsed = upstream.json::<Value>().await;
                 let response = match parsed {
-                    Ok(output) => reasoning_usage(&s.client, &url, output).await,
+                    Ok(output) => {
+                        s.count_usage(id, output.get("usage"));
+                        reasoning_usage(&s.client, &url, output).await
+                    }
                     Err(e) => failure("backend_error", e.to_string()).into_response(),
                 };
                 drop(lease);
                 response
             }
-            Ok(upstream) => forward_response(upstream, lease).await,
+            Ok(upstream) => {
+                // Counted only where the backend ran; a forwarded request is counted by the peer.
+                let meter = lease.is_some().then(|| Meter {
+                    service: s.clone(),
+                    model: id.to_owned(),
+                    strip_usage_chunk: stream_usage
+                        && value["stream_options"]["include_usage"] != true,
+                });
+                forward_response(upstream, lease, meter).await
+            }
             Err(e) => {
                 // A peer that cannot be reached (dead host, closed tunnel) is skipped from now on,
                 // and the next host takes the request. A timeout is not retried: it may have run.
@@ -1349,9 +1459,198 @@ fn refused_before_running(upstream: &reqwest::Response) -> bool {
             && code == Some("capacity_unavailable"))
 }
 
+/// Counts a reply this node's backend served, from the usage the backend reported, once the body
+/// has been read to the end. Reads usage only; no content is kept or logged.
+struct Meter {
+    service: Arc<Service>,
+    model: String,
+    strip_usage_chunk: bool,
+}
+
+/// A JSON reply larger than this is passed on without reading its usage.
+const METERED_JSON_BYTES: usize = 8 * 1024 * 1024;
+/// An event still open past this many bytes is passed through as it arrives, unread; parsing
+/// resumes after its blank line, so nothing is held back beyond this bound.
+const SSE_EVENT_BYTES: usize = 64 * 1024;
+
+/// What a metered reply's body is read for, by its content type.
+enum Watch {
+    Json(Vec<Bytes>, usize),
+    Events(Events),
+    /// Audio and other bodies carry no token usage: counted as completed, never as missing usage.
+    Unmetered,
+}
+
+struct Events {
+    /// Bytes of the event not yet complete, and how far they were searched for its end.
+    pending: Vec<u8>,
+    scanned: usize,
+    /// The last usage seen.
+    usage: Option<Value>,
+    /// Drop the usage-only event (the client did not ask for it).
+    strip: bool,
+    /// While an oversized event passes through: its last bytes, to find its end across chunks.
+    skipping: Option<Vec<u8>>,
+}
+
+/// Only `usage` is read from a JSON reply; serde skips everything else.
+#[derive(serde::Deserialize)]
+struct Reported {
+    usage: Option<Value>,
+}
+
+impl Watch {
+    fn new(content_type: &str, strip_usage_chunk: bool) -> Watch {
+        if content_type.starts_with("application/json") {
+            Watch::Json(Vec::new(), 0)
+        } else if content_type.starts_with("text/event-stream") {
+            Watch::Events(Events {
+                pending: Vec::new(),
+                scanned: 0,
+                usage: None,
+                strip: strip_usage_chunk,
+                skipping: None,
+            })
+        } else {
+            Watch::Unmetered
+        }
+    }
+
+    fn pass(&mut self, chunk: Bytes) -> Bytes {
+        match self {
+            Watch::Json(parts, size) => {
+                *size = size.saturating_add(chunk.len());
+                if *size <= METERED_JSON_BYTES {
+                    parts.push(chunk.clone());
+                } else {
+                    parts.clear();
+                }
+                chunk
+            }
+            Watch::Events(events) => events.pass(chunk),
+            Watch::Unmetered => chunk,
+        }
+    }
+
+    /// The reply ended: whether it is metered, the usage it reported, and bytes still held back.
+    fn end(self) -> (bool, Option<Value>, Bytes) {
+        match self {
+            Watch::Json(parts, size) => {
+                let body = (size <= METERED_JSON_BYTES).then(|| parts.concat());
+                // A struct also reads a JSON array, positionally; only an object can carry usage.
+                let usage = body
+                    .filter(|b| b.iter().find(|c| !c.is_ascii_whitespace()) == Some(&b'{'))
+                    .and_then(|b| serde_json::from_slice::<Reported>(&b).ok())
+                    .and_then(|r| r.usage);
+                (true, usage, Bytes::new())
+            }
+            Watch::Events(events) => {
+                let rest = if events.strip {
+                    events.pending.into()
+                } else {
+                    Bytes::new()
+                };
+                (true, events.usage, rest)
+            }
+            Watch::Unmetered => (false, None, Bytes::new()),
+        }
+    }
+}
+
+impl Events {
+    /// Passes one chunk on. When the usage-only event is dropped, complete events go out as soon
+    /// as their blank line arrives and only the incomplete tail waits.
+    fn pass(&mut self, chunk: Bytes) -> Bytes {
+        let mut out = Vec::new();
+        let mut rest = &chunk[..];
+        if let Some(mut tail) = self.skipping.take() {
+            let held = tail.len();
+            tail.extend_from_slice(rest);
+            match event_end(&tail, 0) {
+                Some(end) => {
+                    // The held bytes held no blank line, so the end lies in this chunk.
+                    let cut = end.saturating_sub(held);
+                    out.extend_from_slice(&rest[..cut]);
+                    rest = &rest[cut..];
+                }
+                None => {
+                    self.skipping = Some(tail[tail.len().saturating_sub(3)..].to_vec());
+                    return chunk;
+                }
+            }
+        }
+        self.pending.extend_from_slice(rest);
+        let (mut start, mut from) = (0, self.scanned);
+        while let Some(end) = event_end(&self.pending, from) {
+            let event = &self.pending[start..end];
+            let data = sse_data(event);
+            let usage = data.as_ref().map(|d| &d["usage"]).filter(|u| u.is_object());
+            let usage_only = usage.is_some()
+                && data
+                    .as_ref()
+                    .is_some_and(|d| d["choices"].as_array().is_none_or(|c| c.is_empty()));
+            if let Some(usage) = usage {
+                self.usage = Some(usage.clone());
+            }
+            if !(self.strip && usage_only) {
+                out.extend_from_slice(event);
+            }
+            (start, from) = (end, end);
+        }
+        self.pending.drain(..start);
+        if self.pending.len() > SSE_EVENT_BYTES {
+            // Too large to hold: pass it through, in order, and find its end as it streams.
+            self.skipping = Some(self.pending[self.pending.len() - 3..].to_vec());
+            out.append(&mut self.pending);
+        }
+        // A blank line split across chunks is found by searching its last three bytes again.
+        self.scanned = self.pending.len().saturating_sub(3);
+        if self.strip { out.into() } else { chunk }
+    }
+}
+
+impl Meter {
+    fn finish(&self, watch: Watch) -> Bytes {
+        let (metered, usage, rest) = watch.end();
+        if metered {
+            self.service
+                .count_usage(&self.model, usage.as_ref().filter(|u| u.is_object()));
+        } else {
+            self.service.count_completed(&self.model);
+        }
+        rest
+    }
+}
+
+/// The end of the first complete server-sent event in `buffer` that ends after `from`, after its
+/// blank line (`\n\n` or `\r\n\r\n`).
+fn event_end(buffer: &[u8], from: usize) -> Option<usize> {
+    (from..buffer.len()).find_map(|i| {
+        if buffer[i..].starts_with(b"\n\n") {
+            Some(i + 2)
+        } else if buffer[i..].starts_with(b"\r\n\r\n") {
+            Some(i + 4)
+        } else {
+            None
+        }
+    })
+}
+
+/// The JSON in one event's `data:` lines, if it has any.
+fn sse_data(event: &[u8]) -> Option<Value> {
+    let text = std::str::from_utf8(event).ok()?;
+    let data: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim)
+        .collect();
+    serde_json::from_str(&data.join("\n")).ok()
+}
+
 async fn forward_response(
     upstream: reqwest::Response,
     lease: Option<crate::lifecycle::Lease>,
+    meter: Option<Meter>,
 ) -> Response {
     let status = upstream.status();
     let headers = upstream.headers().clone();
@@ -1378,9 +1677,40 @@ async fn forward_response(
         }
         return response;
     }
+    let watch = meter.as_ref().map(|m| {
+        Watch::new(
+            headers
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or(""),
+            m.strip_usage_chunk,
+        )
+    });
     let stream = futures_util::stream::unfold(
-        (upstream.bytes_stream(), lease),
-        |(mut stream, lease)| async move { stream.next().await.map(|chunk| (chunk, (stream, lease))) },
+        (upstream.bytes_stream().fuse(), lease, meter, watch),
+        |(mut stream, lease, meter, mut watch)| async move {
+            loop {
+                match (stream.next().await, &meter) {
+                    (Some(Ok(chunk)), Some(_)) => {
+                        let chunk = watch.as_mut()?.pass(chunk);
+                        if !chunk.is_empty() {
+                            return Some((Ok(chunk), (stream, lease, meter, watch)));
+                        }
+                    }
+                    (Some(chunk), _) => {
+                        // A broken reply did not complete, so it is not counted.
+                        let watch = if chunk.is_err() { None } else { watch };
+                        let meter = if chunk.is_err() { None } else { meter };
+                        return Some((chunk, (stream, lease, meter, watch)));
+                    }
+                    (None, Some(m)) => {
+                        let rest = m.finish(watch.take()?);
+                        return (!rest.is_empty()).then(|| (Ok(rest), (stream, lease, None, None)));
+                    }
+                    (None, None) => return None,
+                }
+            }
+        },
     );
     let mut response = Response::new(Body::from_stream(stream));
     *response.status_mut() = status;
@@ -1549,7 +1879,9 @@ fn normalize_chat(off_needs_t0: bool, value: &mut Value) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{engine_chat_body, equal, normalize_chat, reasoning_usage, refused_before_running};
+    use super::{
+        Watch, engine_chat_body, equal, normalize_chat, reasoning_usage, refused_before_running,
+    };
     use crate::lifecycle::failure;
     use axum::response::IntoResponse;
     use serde_json::json;
@@ -1754,5 +2086,109 @@ mod tests {
         assert!(normalize_chat(false, &mut value).is_err());
         let mut bad = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":"max"});
         assert!(normalize_chat(false, &mut bad).is_err());
+    }
+
+    fn watched(watch: &mut Watch, body: &str, cut: usize) -> String {
+        let mut out = Vec::new();
+        for piece in body.as_bytes().chunks(cut) {
+            out.extend_from_slice(&watch.pass(axum::body::Bytes::copy_from_slice(piece)));
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn the_usage_only_chunk_is_dropped_whole_across_any_chunk_boundary() {
+        let content = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":null}\n\n";
+        let usage =
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n";
+        let body = format!("{content}{usage}data: [DONE]\n\n");
+        for cut in 1..body.len() {
+            let mut watch = Watch::new("text/event-stream", true);
+            let mut out = watched(&mut watch, &body, cut);
+            let (_, reported, rest) = watch.end();
+            out.push_str(std::str::from_utf8(&rest).unwrap());
+            assert_eq!(out, format!("{content}data: [DONE]\n\n"), "cut {cut}");
+            assert_eq!(reported.unwrap()["completion_tokens"], 2);
+            // A client that asked for usage gets every byte, unchanged.
+            let mut watch = Watch::new("text/event-stream; charset=utf-8", false);
+            assert_eq!(watched(&mut watch, &body, cut), body);
+            assert_eq!(watch.end().1.unwrap()["prompt_tokens"], 3);
+        }
+    }
+
+    #[test]
+    fn usage_on_a_content_chunk_is_kept_and_a_stream_without_usage_reports_none() {
+        let last = "data: {\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}\r\n\r\n";
+        let mut watch = Watch::new("text/event-stream", true);
+        assert_eq!(watched(&mut watch, last, 7), last);
+        assert_eq!(watch.end().1.unwrap()["prompt_tokens"], 5);
+        let mut watch = Watch::new("text/event-stream", true);
+        watched(&mut watch, "data: {\"choices\":[]}\n\ndata: [DONE]\n\n", 3);
+        assert!(watch.end().1.is_none());
+        let mut watch = Watch::new("application/json", false);
+        watched(
+            &mut watch,
+            "{\"data\":[],\"usage\":{\"prompt_tokens\":4}}",
+            5,
+        );
+        assert_eq!(watch.end().1.unwrap()["prompt_tokens"], 4);
+        // A top-level array or string passes, and reports no usage, without a panic.
+        for body in ["[{\"prompt_tokens\":9}]", "[]", "\"text\"", " 42"] {
+            let mut watch = Watch::new("application/json", false);
+            assert_eq!(watched(&mut watch, body, 2), body);
+            let (metered, usage, _) = watch.end();
+            assert!(metered && usage.is_none(), "{body}");
+        }
+        // Audio carries no token usage: completed, but not metered.
+        let mut watch = Watch::new("audio/wav", false);
+        watched(&mut watch, "RIFF....WAVE", 4);
+        assert!(!watch.end().0);
+    }
+
+    #[test]
+    fn an_event_past_the_bound_passes_through_and_parsing_resumes_after_it() {
+        let usage = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3}}\n\n";
+        let big = format!("data: {}", "x".repeat(2 * super::SSE_EVENT_BYTES));
+        let body = format!("{big}\n\n{usage}data: [DONE]\n\n");
+        for cut in [1000, 4096, 70_000] {
+            for strip in [true, false] {
+                let mut watch = Watch::new("text/event-stream", strip);
+                let mut out = watched(&mut watch, &body, cut);
+                let (_, reported, rest) = watch.end();
+                out.push_str(std::str::from_utf8(&rest).unwrap());
+                // The large event arrives whole and in order; the usage event after it is still
+                // read, and still dropped for a client that did not ask for it.
+                let expected = if strip {
+                    format!("{big}\n\ndata: [DONE]\n\n")
+                } else {
+                    body.clone()
+                };
+                assert_eq!(out, expected, "cut {cut} strip {strip}");
+                assert_eq!(reported.unwrap()["prompt_tokens"], 3);
+            }
+        }
+    }
+
+    #[test]
+    fn an_event_past_the_bound_that_never_ends_passes_every_byte_and_reports_no_usage() {
+        let first = "data: {\"choices\":[{\"delta\":{}}]}\n\n";
+        let body = format!("{first}data: {}", "x".repeat(2 * super::SSE_EVENT_BYTES));
+        for strip in [true, false] {
+            let mut watch = Watch::new("text/event-stream", strip);
+            let mut out = watched(&mut watch, &body, 4096);
+            let (metered, reported, rest) = watch.end();
+            out.push_str(std::str::from_utf8(&rest).unwrap());
+            assert_eq!(out, body, "strip {strip}");
+            assert!(metered && reported.is_none(), "strip {strip}");
+        }
+    }
+
+    #[test]
+    fn a_stream_that_ends_inside_an_event_keeps_its_last_bytes() {
+        let body = "data: {\"choices\":[{\"delta\":{}}]}\n\ndata: {\"choices\":[{\"del";
+        let mut watch = Watch::new("text/event-stream", true);
+        let mut out = watched(&mut watch, body, 5);
+        out.push_str(std::str::from_utf8(&watch.end().2).unwrap());
+        assert_eq!(out, body);
     }
 }

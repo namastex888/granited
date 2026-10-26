@@ -6,8 +6,29 @@ import hashlib
 import json
 import math
 import time
+from http.server import ThreadingHTTPServer
 
+import native
 from native import Unsupported, serve
+
+
+class Events(list):
+    """Server-sent events the stub returns in place of one JSON body."""
+
+
+def streaming(handler):
+    """native.serve's handler, able to send a streamed chat reply as server-sent events."""
+    class Handler(handler):
+        def send(self, status, data):
+            if not isinstance(data, Events):
+                return super().send(status, data)
+            payload = b''.join(b'data: ' + (e if isinstance(e, str) else json.dumps(e)).encode() + b'\n\n' for e in data)
+            self.send_response(status)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+    return Handler
 
 
 class Stub:
@@ -52,6 +73,21 @@ class Stub:
                         thinking_budget_tokens=data.get('thinking_budget_tokens'),
                         chat_template_kwargs=data.get('chat_template_kwargs'), reasoning_effort=data.get('reasoning_effort'),
                         parts=[p.get('type') for p in parts], texts=[p['text'] for p in parts if p.get('type') == 'text'])
+            if 'ARRAY' in text:
+                # A 2xx whose top level is not an object: the router passes it and reads no usage.
+                return [dict(prompt_tokens=9)]
+            if data.get('stream'):
+                # Like llama.cpp and vLLM: usage arrives in a final chunk with no choices, only when asked.
+                chunk = lambda **delta: dict(object='chat.completion.chunk', model=self.args.model, choices=[
+                    dict(index=0, delta=delta, finish_reason=None if delta else 'stop')])
+                # HUGE: one event far past the router's 64 KiB event bound.
+                content = 'x' * (256 << 10) if 'HUGE' in text else json.dumps(seen)
+                events = Events([chunk(role='assistant'), chunk(content=content), chunk()])
+                if (data.get('stream_options') or {}).get('include_usage'):
+                    events.append(dict(object='chat.completion.chunk', model=self.args.model, choices=[],
+                                       usage=dict(prompt_tokens=3, completion_tokens=2, total_tokens=5,
+                                                  prompt_tokens_details=dict(cached_tokens=1))))
+                return Events(events + ['[DONE]'])
             return dict(object='chat.completion', model=self.args.model,
                         choices=[dict(index=0, finish_reason='stop', message=dict(role='assistant', content=json.dumps(seen)))],
                         usage=dict(prompt_tokens=1, completion_tokens=1, total_tokens=2))
@@ -73,6 +109,7 @@ def main():
     p.add_argument('--port', type=int, required=True)
     p.add_argument('--delay-ms', type=int, default=0)
     args = p.parse_args()
+    native.ThreadingHTTPServer = lambda address, handler: ThreadingHTTPServer(address, streaming(handler))
     serve(Stub(args), args)
 
 

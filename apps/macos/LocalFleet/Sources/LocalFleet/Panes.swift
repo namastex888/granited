@@ -9,10 +9,10 @@ struct GeneralPane: View {
         Form {
             Section {
                 HStack(spacing: 14) {
-                    SettingsIcon(symbol: "cpu", tint: .accentColor, size: 52)
+                    BrandIcon(size: 52)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("granited").font(.title2.weight(.semibold))
-                        Text("Serves IBM Granite models on this Mac and across your nodes.")
+                        Text("LocalFleet").font(.title2.weight(.semibold))
+                        Text("Private AI on this Mac and across your nodes, served by the granited engine.")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                 }

@@ -41,6 +41,8 @@ curl http://127.0.0.1:8310/v1/chat/completions \
 
 Any OpenAI SDK works: set `base_url` to `http://127.0.0.1:8310/v1`. `auto` works through this URL; a LiteLLM proxy in front knows only its own aliases. Each answer says where it ran, in headers like `x-granite-host`, `x-granite-model-alias` and `server-timing`.
 
+Send `X-LocalFleet-Client: <name>` (1–32 of `a-z 0-9 . _ -`) to have the admin view (`/internal/metrics`, `/internal/hosts`) count your app's requests by name. The name is self-declared, counted only on the node the request enters, and never used for routing, admission or auth. Requests through a LiteLLM proxy (`:8300`) count as unidentified: LiteLLM passes `x-` headers on only with `forward_client_headers_to_llm_api`, which would also pass on a spoofable `x-granite-hop`.
+
 | Endpoint | What it does |
 | --- | --- |
 | `/v1/chat/completions` | Chat and reasoning. `model: "auto"` or a model name; `reasoning_effort` off, low or full; `max_tokens` is the reply, `thinking_budget_tokens` caps thinking |

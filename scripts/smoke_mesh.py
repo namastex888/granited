@@ -60,6 +60,75 @@ def foreign_process_is_never_stopped(binary):
     return checks
 
 
+MOCK_ROUTER = """
+import http.server, json, sys, time
+class H(http.server.BaseHTTPRequestHandler):
+    def reply(self, body):
+        data = json.dumps(body).encode()
+        self.send_response(200); self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
+    def do_GET(self):
+        if self.path.startswith('/v1/models'):
+            time.sleep(2)  # a router that is slow to list its models, as a busy one is
+            return self.reply({'data': [{'id': 'granite-4.2-3b-Q4_K_M', 'status': {'value': 'loaded', 'args': []}}]})
+        if self.path.startswith('/props'):
+            return self.reply({'default_generation_settings': {'n_ctx': 4096}, 'total_slots': 1, 'build_info': 'mock'})
+        self.reply({'status': 'ok'})
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        self.reply({'object': 'chat.completion', 'model': 'granite-4.2-3b-Q4_K_M', 'choices': [{'index': 0, 'finish_reason': 'stop',
+                    'message': {'role': 'assistant', 'content': 'hi'}}], 'usage': {'prompt_tokens': 3, 'completion_tokens': 1, 'total_tokens': 4}})
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()
+"""
+
+
+def external_engine_ready_at_first_request(binary):
+    """An operator-owned router is read before the manager listens: the first request after a
+    restart is served, not refused with capacity_unavailable while the first sync is pending."""
+    with tempfile.TemporaryDirectory() as state:
+        engine, port = free_port(), free_port()
+        mock = subprocess.Popen([sys.executable, '-c', MOCK_ROUTER, str(engine)], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+        path, _ = profile(state, 'ext', port, 0, [])
+        config = json.loads(path.read_text())
+        registry = {m['id']: m for m in json.loads((ROOT / 'configs/registry.json').read_text())['models']}
+        config['deployments'] = [dict(model='granite-4.2-3b', backend='llama_cpp', base_url=f'http://127.0.0.1:{engine}',
+                                      revision=registry['granite-4.2-3b']['hf_revision'], artifact_repo='stub', command=[],
+                                      external=True, external_lifecycle=False, shared_accelerator=True, keep_warm=True,
+                                      backend_model='granite-4.2-3b-Q4_K_M', memory_bytes=64 << 20, device='cpu',
+                                      health_path='/health', identity_path='/v1/models', runtime_manifest='scripts/smoke_mesh.py',
+                                      backend_build='mock', context_tokens=4096, max_concurrency=1, load_timeout_seconds=30)]
+        path.write_text(json.dumps(config))
+        env = dict(os.environ, GRANITE_API_KEY=API, GRANITE_ADMIN_KEY=ADMIN)
+        router = None
+        try:
+            for _ in range(100):
+                try:
+                    socket.create_connection(('127.0.0.1', engine), 0.2).close()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            router = subprocess.Popen([str(binary), 'serve', str(path)], cwd=ROOT, env=env, start_new_session=True,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for _ in range(400):  # poll the socket, so the request lands the moment the manager listens
+                try:
+                    socket.create_connection(('127.0.0.1', port), 0.05).close()
+                    break
+                except OSError:
+                    time.sleep(0.02)
+            status, _, raw = call(port, '/v1/chat/completions', {'model': 'granite-4.2-3b', 'reasoning_effort': 'off', 'temperature': 0,
+                                                                 'max_tokens': 4, 'messages': [{'role': 'user', 'content': 'hi'}]})
+            print('   first request after start:', status, raw[:100])
+            return [('an external engine is served on the first request after a restart', status == 200)]
+        finally:
+            if router:
+                os.killpg(router.pid, signal.SIGTERM)
+                router.wait(timeout=20)
+            os.killpg(mock.pid, signal.SIGTERM)
+            mock.wait(timeout=10)
+
+
 def main():
     binary = ROOT / 'target/debug/granited'
     ports = {n: free_port() for n in 'abc'}
@@ -151,6 +220,7 @@ def main():
                     os.killpg(router.pid, signal.SIGTERM)
                     router.wait(timeout=20)
     checks += foreign_process_is_never_stopped(binary)
+    checks += external_engine_ready_at_first_request(binary)
     for name, ok in checks:
         print(('PASS ' if ok else 'FAIL ') + name)
     sys.exit(0 if checks and all(ok for _, ok in checks) else 1)

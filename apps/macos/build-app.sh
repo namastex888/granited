@@ -13,6 +13,9 @@ bin="$(swift build -c release --package-path "$pkg" --show-bin-path)/LocalFleet"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/LocalFleet"
+# App icon and the template menu-bar mark (1x and @2x).
+cp "$pkg/Resources/LocalFleet.icns" "$pkg/Resources/MenuBarMark.png" "$pkg/Resources/MenuBarMark@2x.png" \
+    "$app/Contents/Resources/"
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -23,6 +26,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>ai.localfleet.app</string>
     <key>CFBundleName</key><string>LocalFleet</string>
     <key>CFBundleDisplayName</key><string>LocalFleet</string>
+    <key>CFBundleIconFile</key><string>LocalFleet</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${version}</string>
     <key>CFBundleVersion</key><string>1</string>

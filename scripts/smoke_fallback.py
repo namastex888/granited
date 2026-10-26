@@ -30,9 +30,10 @@ def free_port():
         return s.getsockname()[1]
 
 
-def call(port, path, body=None, key=API):
+def call(port, path, body=None, key=API, client=None):
     req = urllib.request.Request(f'http://127.0.0.1:{port}' + path, data=json.dumps(body).encode() if body is not None else None,
-                                 headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+                                 headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json',
+                                          **({'X-LocalFleet-Client': client} if client else {})})
     try:
         with urllib.request.urlopen(req, timeout=180) as r:
             return r.status, dict(r.headers), r.read()
@@ -80,7 +81,7 @@ def main():
             body = {'model': model, 'input': 'x'}
             status, _, _ = call(b_port, '/v1/embeddings', body)  # warm B so placement ranks it first
             checks.append(('peer warms up', status == 200))
-            status, headers, _ = call(a_port, '/v1/embeddings', body)
+            status, headers, _ = call(a_port, '/v1/embeddings', body, client='via-a')
             checks.append(('warm peer is preferred over a cold local worker', status == 200 and headers.get('x-granite-host') == 'b'))
             holder = threading.Thread(target=call, args=(b_port, '/v1/embeddings', body))
             holder.start()
@@ -92,6 +93,26 @@ def main():
             status, _, raw = call(a_port, '/internal/metrics', key=ADMIN)
             rejections = json.loads(raw).get('rejections', {}) if status == 200 else {}
             checks.append(('the refusal is counted', sum(rejections.get(model, {}).values()) >= 1))
+            status, _, raw = call(a_port, '/internal/hosts', key=ADMIN)
+            served = [h['usage']['models'][model]['requests_completed'] for h in json.loads(raw)['hosts']] if status == 200 else []
+            checks.append(('each request is counted once, by the host that ran it', served == [1, 3]))
+            hosts = json.loads(raw)['hosts'] if status == 200 else []
+            labelled = [h['clients']['last_seen_unix_ms'] for h in hosts]
+            checks.append(('a labelled request through A to B counts its client once, on A',
+                           len(labelled) == 2 and 'via-a' in labelled[0] and 'via-a' not in labelled[1]))
+            holder = threading.Thread(target=call, args=(b_port, '/v1/embeddings', body), kwargs=dict(client='slow'))
+            holder.start()
+            time.sleep(0.3)
+            status, _, raw = call(b_port, '/internal/metrics', key=ADMIN)
+            during = json.loads(raw)['clients'] if status == 200 else {}
+            holder.join()
+            status, _, raw = call(b_port, '/internal/metrics', key=ADMIN)
+            after = json.loads(raw)['clients'] if status == 200 else {}
+            checks.append(('a client is active while its request runs, then only last seen',
+                           during.get('active') == {'slow': 1} and after.get('active') == {}
+                           and 'slow' in after.get('last_seen_unix_ms', {})))
+            checks.append(('the clients block is admin-only', call(a_port, '/internal/metrics')[0] == 401
+                           and call(a_port, '/internal/hosts')[0] == 401))
         finally:
             for router in routers:
                 router.terminate()
