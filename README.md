@@ -1,13 +1,13 @@
-# granited
+# LocalFleet
 
-One endpoint for every IBM Granite model family, served from the machines you already own.
+One endpoint for your models, served from the machines you already own. Built around every IBM Granite model family.
 
-granited runs a small Rust agent on each machine. The agent measures the hardware, starts the right native runtime for each Granite model (oMLX on Apple silicon; llama.cpp on Metal, Vulkan, CUDA or CPU; PyTorch workers for embeddings, speech and time series; vLLM for vision), and keeps each model inside the memory it can actually afford. Machines join each other over SSH, and any OpenAI client can talk to the one endpoint they share.
+LocalFleet's engine is **granited**, a small Rust agent that runs on each machine. The agent measures the hardware, starts the right native runtime for each Granite model (oMLX on Apple silicon; llama.cpp on Metal, Vulkan, CUDA or CPU; PyTorch workers for embeddings, speech and time series; vLLM for vision), and keeps each model inside the memory it can actually afford. Machines join each other over SSH, and any OpenAI client can talk to the one endpoint they share.
 
 ```
    any OpenAI client, curl, the macOS menu-bar app
                               │
-                     granited (coordinator)          one URL, one key
+                granited (LocalFleet coordinator)    one URL, one key
             ┌─────────────────┼──────────────────┐
      this machine        node over SSH        node over SSH
   oMLX · llama.cpp Metal    llama.cpp · Vulkan    llama.cpp · CUDA
@@ -17,9 +17,9 @@ granited runs a small Rust agent on each machine. The agent measures the hardwar
 ## Quick start
 
 ```sh
-git clone <this repository> granited && cd granited
-python3 scripts/granitectl.py scan        # what this machine can run; changes nothing
-python3 scripts/granitectl.py install     # shows the plan, asks, then sets everything up
+git clone <this repository> localfleet && cd localfleet
+python3 scripts/localfleet.py scan        # what this machine can run; changes nothing
+python3 scripts/localfleet.py install     # shows the plan, asks, then sets everything up
 ```
 
 `install` fetches pinned runtimes and model files (each checked against a recorded SHA-256), builds the agent, writes a login service (launchd on macOS, a systemd user unit on Linux), and prints the dashboard URL and where your admin key is. On an M5 Pro with warm caches it took 30 s; the first request to a cold model also loads it (about a minute for the embedding worker).
@@ -27,16 +27,16 @@ python3 scripts/granitectl.py install     # shows the plan, asks, then sets ever
 Add another machine you can reach with `ssh`:
 
 ```sh
-python3 scripts/granitectl.py node add user@gpu-box.local
+python3 scripts/localfleet.py node add user@gpu-box.local
 ```
 
 That scans the machine over SSH, copies this checkout there, installs it with its own plan, opens a supervised SSH link, and enrolls it. Nothing on the node listens on the network. A loopback test of the whole sequence (warm caches) took 35 s, after which the coordinator routed requests to the node.
 
-On macOS, `apps/macos/build-app.sh` builds GraniteBar: a menu-bar icon with the engine's live state and a System Settings-style Preferences window (models, devices, nodes, connection details, start at login). Headless Linux nodes are managed from it through the coordinator.
+On macOS, `apps/macos/build-app.sh` builds the LocalFleet app: a menu-bar icon with the engine's live state and a System Settings-style Preferences window (models, devices, nodes, connection details, start at login). Headless Linux nodes are managed from it through the coordinator.
 
 ## What runs where
 
-`granitectl scan` decides from measured hardware; it never guesses from a processor name.
+`localfleet scan` decides from measured hardware; it never guesses from a processor name.
 
 | Device | Runtime | Granite models |
 | --- | --- | --- |
@@ -48,15 +48,15 @@ On macOS, `apps/macos/build-app.sh` builds GraniteBar: a menu-bar icon with the 
 
 Measured so far: Granite 4.2 on M5 Pro Metal and on the Ryzen AI 9 HX 470's Radeon 890M (Vulkan); CPU workers on both; on an RTX 4060 Ti, Vision through vLLM and Switch through an operator-owned llama.cpp b11870. The installer's CUDA path for Granite 4.2 uses the same llama.cpp release but has not been measured yet. Each measurement keeps its raw per-request data, p50/p95/p99 and its limits in the reference deployment's evidence set.
 
-## Why granited and not …
+## Why LocalFleet and not …
 
-| If you want | Use | What granited adds |
+| If you want | Use | What LocalFleet adds |
 | --- | --- | --- |
-| Chat with one model on one Mac | oMLX (granited can drive it as its Mac engine), LM Studio, Ollama | Non-chat Granite families with typed APIs; several machines as one endpoint |
+| Chat with one model on one Mac | oMLX (LocalFleet can drive it as its Mac engine), LM Studio, Ollama | Non-chat Granite families with typed APIs; several machines as one endpoint |
 | Maximum throughput on a GPU server | vLLM | Mixed fleets (Mac + iGPU box + GPU box) with memory admission across them |
 | A single llama.cpp server | llama.cpp | Lifecycle, idle eviction, provenance headers, families llama.cpp does not serve |
 
-granited does not pool memory across machines into one big GPU. Each model runs whole on one device; different devices serve different models at the same time.
+LocalFleet does not pool memory across machines into one big GPU. Each model runs whole on one device; different devices serve different models at the same time.
 
 ## API
 
@@ -97,6 +97,10 @@ cargo test --locked && python3 scripts/smoke_stub.py
 ## Status
 
 P0/P1 (the families above) are implemented and measured. Guardian, Docling, reranking, geospatial and other TSFM architectures are declared but return structured `unsupported` errors until each has a validated adapter. No accuracy scores are claimed; quality suites and saturation studies are open work. Model cards for every pinned revision are under `reports/model-cards/`.
+
+## Names
+
+LocalFleet was called granited until 2026-10-26. The engine keeps that name (the `granited` binary, `ai.granited.*` services, `x-granite-*` headers and `GRANITE_*` keys), and `scripts/granitectl.py` still works as an alias of `scripts/localfleet.py`.
 
 ## License
 

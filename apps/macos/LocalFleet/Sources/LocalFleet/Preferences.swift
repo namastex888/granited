@@ -81,7 +81,7 @@ final class PreferencesController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.setContentSize(NSSize(width: 760, height: 580))
         window.contentMinSize = NSSize(width: 640, height: 420)
-        window.setFrameAutosaveName("GraniteBarPreferences")
+        window.setFrameAutosaveName("LocalFleetPreferences")
         window.center()
         window.delegate = self
         return window

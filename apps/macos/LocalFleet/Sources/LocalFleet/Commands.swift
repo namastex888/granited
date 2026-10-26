@@ -9,7 +9,7 @@ struct CommandSpec: Sendable, Equatable {
     var argv: [String] { [executable] + arguments }
     var commandLine: String { argv.map(shellQuote).joined(separator: " ") }
 
-    /// Finder-launched apps get a minimal PATH; granitectl needs ssh, uv, git and Homebrew tools.
+    /// Finder-launched apps get a minimal PATH; localfleet needs ssh, uv, git and Homebrew tools.
     static var environment: [String: String] {
         var env = ProcessInfo.processInfo.environment
         let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
@@ -167,9 +167,9 @@ final class StreamingCommand: ObservableObject, Identifiable {
     }
 }
 
-/// argv builders for `scripts/granitectl.py`. Arguments that reach argparse or ssh are checked so
+/// argv builders for `scripts/localfleet.py`. Arguments that reach argparse or ssh are checked so
 /// a value can never be parsed as an option.
-struct Granitectl: Sendable {
+struct FleetCLI: Sendable {
     let python: String
     let script: String
     let root: String?
@@ -179,14 +179,14 @@ struct Granitectl: Sendable {
         case invalid(String)
         var description: String {
             switch self {
-            case .notConfigured: return "granitectl is not configured (set `granitectl` or `root` in app.json)"
+            case .notConfigured: return "the localfleet CLI is not configured (set `cli` or `root` in app.json)"
             case .invalid(let why): return why
             }
         }
     }
 
     init(config: AppConfig) throws {
-        guard let script = config.granitectl else { throw BuildError.notConfigured }
+        guard let script = config.cli else { throw BuildError.notConfigured }
         self.python = config.python ?? "/usr/bin/python3"
         self.script = script
         self.root = config.root ?? ((script as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent
@@ -220,7 +220,7 @@ struct Granitectl: Sendable {
     func uninstall() -> CommandSpec { spec(["uninstall"]) }
 }
 
-/// `granitectl scan --json` → `{inventory, plan}`.
+/// `localfleet scan --json` → `{inventory, plan}`.
 struct ScanResult: Decodable, Sendable, Equatable {
     struct Plan: Decodable, Sendable, Equatable {
         struct Llama: Decodable, Sendable, Equatable {

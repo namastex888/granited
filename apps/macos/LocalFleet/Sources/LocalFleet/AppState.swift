@@ -331,8 +331,8 @@ final class AppState: ObservableObject {
 
     func runScan() {
         guard !scanning else { return }
-        let tool: Granitectl
-        do { tool = try Granitectl(config: config) } catch {
+        let tool: FleetCLI
+        do { tool = try FleetCLI(config: config) } catch {
             scanError = String(describing: error); return
         }
         scanning = true
@@ -353,7 +353,7 @@ final class AppState: ObservableObject {
 
     // MARK: Commands that change the installation
 
-    func granitectl() throws -> Granitectl { try Granitectl(config: config) }
+    func cli() throws -> FleetCLI { try FleetCLI(config: config) }
 
     func makeCommand(title: String, spec: CommandSpec) -> StreamingCommand {
         StreamingCommand(title: title, spec: spec, dryRun: config.dryRun)

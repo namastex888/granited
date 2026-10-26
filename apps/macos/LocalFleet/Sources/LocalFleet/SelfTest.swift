@@ -6,14 +6,14 @@ import Foundation
 ///
 ///   --self-test [--url URL] [--keys PATH] [--config PATH]
 ///       GET /healthz, /admin/models, /internal/hosts, /internal/hardware, /internal/metrics and
-///       /v1/models with the app's client; prints the launchctl and granitectl commands the GUI
+///       /v1/models with the app's client; prints the launchctl and localfleet commands the GUI
 ///       would run, without running them.
-///   --dry-run-node-add DEST [--name N] [--jump J]    print the `granitectl node add` argv
+///   --dry-run-node-add DEST [--name N] [--jump J]    print the `localfleet node add` argv
 ///   --dry-run-node-remove NAME | --dry-run-uninstall print those argv
 ///   --write-keep-warm MODEL on|off --profile PATH   edit deployments[].keep_warm in PATH
 ///   --write-ram-reserve GIB --profile PATH          edit ram_reserve_bytes in PATH
 ///   --write-run-at-load on|off --plist PATH         edit RunAtLoad in a LaunchAgent plist (no launchctl)
-///   --scan                                          run `granitectl scan --json` and summarize the plan
+///   --scan                                          run `localfleet scan --json` and summarize the plan
 ///   --exercise-load MODEL --url URL                 POST load, wait, POST unload, wait
 enum SelfTest {
     static let modes = ["--self-test", "--dry-run-node-add", "--dry-run-node-remove", "--dry-run-uninstall",
@@ -131,7 +131,7 @@ enum SelfTest {
         return await selfTest(config, loaded: loaded)
     }
 
-    private static func usage(_ s: String) -> Int32 { print("usage: GraniteBar \(s)"); return 2 }
+    private static func usage(_ s: String) -> Int32 { print("usage: LocalFleet \(s)"); return 2 }
 
     private static func onOff(_ s: String) -> Bool? {
         switch s.lowercased() { case "on", "true", "1": true; case "off", "false", "0": false; default: nil }
@@ -140,9 +140,9 @@ enum SelfTest {
     // MARK: Modes
 
     @MainActor
-    private static func dryRun(_ config: AppConfig, _ build: (Granitectl) throws -> CommandSpec) async -> Int32 {
+    private static func dryRun(_ config: AppConfig, _ build: (FleetCLI) throws -> CommandSpec) async -> Int32 {
         do {
-            let spec = try build(try Granitectl(config: config))
+            let spec = try build(try FleetCLI(config: config))
             // Same path the GUI sheet uses, with dry run forced on.
             let cmd = StreamingCommand(title: "dry run", spec: spec, dryRun: true)
             cmd.start()
@@ -166,7 +166,7 @@ enum SelfTest {
     @MainActor
     private static func scan(_ config: AppConfig) async -> Int32 {
         do {
-            let tool = try Granitectl(config: config)
+            let tool = try FleetCLI(config: config)
             print("$ \(tool.scan().commandLine)")
             let r = await ProcessCapture.run(tool.scan())
             guard r.status == 0, let data = r.stdout.data(using: .utf8) else {
@@ -265,7 +265,7 @@ enum SelfTest {
     @MainActor
     private static func selfTest(_ config: AppConfig, loaded: AppConfig.LoadResult) async -> Int32 {
         var ok = true
-        print("GraniteBar self-test")
+        print("LocalFleet self-test")
         switch loaded {
         case .loaded(let c): print("config   : \(c.source ?? "?")")
         case .missing(_, let p): print("config   : defaults (no file at \(p))")
@@ -351,13 +351,13 @@ enum SelfTest {
         print("login    : RunAtLoad \(lc.runAtLoad().map(String.init) ?? "unknown (no plist at \(config.plist))")")
         print("launchctl plan (not executed):")
         for (action, cmd) in lc.plan { print("  \(action.rawValue): \(cmd)") }
-        if let g = try? Granitectl(config: config) {
-            print("granitectl plan (not executed):")
+        if let g = try? FleetCLI(config: config) {
+            print("localfleet plan (not executed):")
             print("  scan     : \(g.scan().commandLine)")
             if let add = try? g.nodeAdd(destination: "user@host", name: nil, jump: nil) { print("  node add : \(add.commandLine)") }
             print("  uninstall: \(g.uninstall().commandLine)")
         } else {
-            print("granitectl: not configured")
+            print("localfleet: not configured")
         }
         print("result   : \(ok ? "PASS" : "FAIL")")
         return ok ? 0 : 1

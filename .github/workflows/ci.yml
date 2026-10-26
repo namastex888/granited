@@ -21,9 +21,9 @@ jobs:
       - run: python3 scripts/smoke_fallback.py
       - run: PYTHONPATH=benchmarks python3 -m unittest discover -s benchmarks/tests
       - run: python3 -m py_compile scripts/*.py workers/*.py
-      - run: python3 scripts/granitectl.py scan
+      - run: python3 scripts/localfleet.py scan
   macos-app:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - run: swift build -c release --package-path apps/macos/GraniteBar
+      - run: swift build -c release --package-path apps/macos/LocalFleet

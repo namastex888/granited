@@ -1,6 +1,7 @@
 import Foundation
 
-/// Contents of `~/Library/Application Support/granited/app.json` (written by `granitectl install`).
+/// Contents of `~/Library/Application Support/LocalFleet/app.json` (written by `localfleet install`;
+/// installs from before the rename wrote `…/granited/app.json`, which is still read).
 /// Every field is optional on disk; missing fields fall back to defaults or disable the feature
 /// that needs them.
 struct AppConfig: Sendable, Equatable {
@@ -12,17 +13,17 @@ struct AppConfig: Sendable, Equatable {
     var label: String
     var plist: String
     var logs: String?
-    /// The granited checkout (`granitectl` runs with this as its working directory).
+    /// The checkout (`localfleet` runs with this as its working directory).
     var root: String?
     /// The engine's JSON profile (`deployments[]`, `ram_reserve_bytes`, `listen`, `peers[]`).
     var profile: String?
-    /// Interpreter used to run `granitectl`.
+    /// Interpreter used to run `localfleet`.
     var python: String?
-    /// Path to `scripts/granitectl.py`.
-    var granitectl: String?
+    /// Path to `scripts/localfleet.py`.
+    var cli: String?
     /// Where model weights live, when known.
     var models: String?
-    /// When true, every process-spawning action (launchctl, granitectl, LaunchAgent edits)
+    /// When true, every process-spawning action (launchctl, localfleet, LaunchAgent edits)
     /// prints its argv instead of running it.
     var dryRun: Bool
 
@@ -30,15 +31,18 @@ struct AppConfig: Sendable, Equatable {
     var source: String?
 
     static var defaultPath: String {
-        let base = FileManager.default.homeDirectoryForCurrentUser.path
-        return base + "/Library/Application Support/granited/app.json"
+        let base = FileManager.default.homeDirectoryForCurrentUser.path + "/Library/Application Support"
+        let current = base + "/LocalFleet/app.json"
+        let legacy = base + "/granited/app.json"
+        let fm = FileManager.default
+        return !fm.fileExists(atPath: current) && fm.fileExists(atPath: legacy) ? legacy : current
     }
 
     static var defaults: AppConfig {
         AppConfig(
             url: defaultURL, keys: nil, label: defaultLabel,
             plist: expandTilde("~/Library/LaunchAgents/\(defaultLabel).plist"),
-            logs: nil, root: nil, profile: nil, python: nil, granitectl: nil, models: nil,
+            logs: nil, root: nil, profile: nil, python: nil, cli: nil, models: nil,
             dryRun: false, source: nil)
     }
 
@@ -51,6 +55,8 @@ struct AppConfig: Sendable, Equatable {
         var root: String?
         var profile: String?
         var python: String?
+        var cli: String?
+        /// The key's name before the rename.
         var granitectl: String?
         var models: String?
         var dry_run: Bool?
@@ -76,10 +82,11 @@ struct AppConfig: Sendable, Equatable {
         }
     }
 
-    /// Resolution order: explicit path > `--config` > GRANITE_BAR_CONFIG > default path.
+    /// Resolution order: explicit path > `--config` > LOCALFLEET_CONFIG (or GRANITE_BAR_CONFIG) > default path.
     static func load(path explicit: String? = nil) -> LoadResult {
         let path = expandTilde(
             explicit ?? LaunchOptions.current.configPath
+                ?? ProcessInfo.processInfo.environment["LOCALFLEET_CONFIG"]
                 ?? ProcessInfo.processInfo.environment["GRANITE_BAR_CONFIG"] ?? defaultPath)
         var result: LoadResult
         if let data = FileManager.default.contents(atPath: path) {
@@ -96,15 +103,15 @@ struct AppConfig: Sendable, Equatable {
                     root: root,
                     profile: nonEmpty(disk.profile).map(expandTilde),
                     python: nonEmpty(disk.python).map(expandTilde),
-                    granitectl: nonEmpty(disk.granitectl).map(expandTilde),
+                    cli: (nonEmpty(disk.cli) ?? nonEmpty(disk.granitectl)).map(expandTilde),
                     models: nonEmpty(disk.models).map(expandTilde),
                     dryRun: disk.dry_run ?? false,
                     source: path)
                 // A checkout implies its standard layout when the explicit fields are absent.
                 if let root {
                     let fm = FileManager.default
-                    if config.granitectl == nil, fm.fileExists(atPath: root + "/scripts/granitectl.py") {
-                        config.granitectl = root + "/scripts/granitectl.py"
+                    if config.cli == nil, fm.fileExists(atPath: root + "/scripts/localfleet.py") {
+                        config.cli = root + "/scripts/localfleet.py"
                     }
                     if config.models == nil, fm.fileExists(atPath: root + "/models") {
                         config.models = root + "/models"

@@ -49,7 +49,7 @@ struct GeneralPane: View {
                 LabeledContent("Login item", value: state.config.label)
             } footer: {
                 Text(state.startAtLogin == nil
-                     ? "No LaunchAgent at \(state.config.plist). Install the engine with granitectl install."
+                     ? "No LaunchAgent at \(state.config.plist). Install the engine with localfleet install."
                      : "Runs the engine as the LaunchAgent \(state.config.label) when you log in.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -241,7 +241,7 @@ struct DevicesPane: View {
     }
 }
 
-/// "Hardware plan" from `granitectl scan --json`: what this machine can deploy and, for every
+/// "Hardware plan" from `localfleet scan --json`: what this machine can deploy and, for every
 /// device it cannot use, why.
 struct HardwarePlanSections: View {
     @ObservedObject var state: AppState
@@ -267,7 +267,7 @@ struct HardwarePlanSections: View {
                     .disabled(state.scanning)
             }
         } footer: {
-            Text("From granitectl scan. Scanning only inventories this Mac; it starts and installs nothing.")
+            Text("From localfleet scan. Scanning only inventories this Mac; it starts and installs nothing.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .onAppear { if state.scan == nil { state.runScan() } }
@@ -339,7 +339,7 @@ struct NodesPane: View {
                     Button("Add Node…") { showAdd = true }
                 }
             } footer: {
-                Text("granitectl ships this checkout to the machine, installs it there, links it to this engine and enrolls it.")
+                Text("localfleet ships this checkout to the machine, installs it there, links it to this engine and enrolls it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let error {
@@ -368,7 +368,7 @@ struct NodesPane: View {
 
     private func remove(_ name: String) {
         do {
-            let spec = try state.granitectl().nodeRemove(name: name)
+            let spec = try state.cli().nodeRemove(name: name)
             guard state.confirm("Remove \(name)?",
                                 detail: "Runs: \(spec.commandLine)\nThe node is unlinked from this engine and the engine restarts. The node's own service keeps running.",
                                 button: "Remove", destructive: true) else { return }
@@ -432,11 +432,11 @@ struct AddNodeSheet: View {
     }
 
     private var spec: CommandSpec? {
-        try? state.granitectl().nodeAdd(destination: destination, name: name, jump: jump)
+        try? state.cli().nodeAdd(destination: destination, name: name, jump: jump)
     }
 
     private var preview: String {
-        do { return try state.granitectl().nodeAdd(destination: destination, name: name, jump: jump).commandLine }
+        do { return try state.cli().nodeAdd(destination: destination, name: name, jump: jump).commandLine }
         catch { return destination.isEmpty ? "Enter the SSH destination of the new machine." : String(describing: error) }
     }
 
@@ -583,7 +583,7 @@ struct AdvancedPane: View {
                 path("Models directory", state.config.models)
                 path("Logs", state.config.logs)
                 path("Python", state.config.python)
-                path("granitectl", state.config.granitectl)
+                path("localfleet", state.config.cli)
                 path("App configuration", state.config.source)
             }
 
@@ -592,7 +592,7 @@ struct AdvancedPane: View {
                     Button("Uninstall Engine…", role: .destructive) { uninstall() }
                 }
             } footer: {
-                Text(error ?? "Runs granitectl uninstall: stops and removes the engine's login services. Models, keys and files stay.")
+                Text(error ?? "Runs localfleet uninstall: stops and removes the engine's login services. Models, keys and files stay.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -628,7 +628,7 @@ struct AdvancedPane: View {
 
     private func uninstall() {
         do {
-            let spec = try state.granitectl().uninstall()
+            let spec = try state.cli().uninstall()
             guard state.confirm("Uninstall the engine?",
                                 detail: "Runs: \(spec.commandLine)\nThis stops the engine and its node links and removes their login services. Connected consumers lose access. Models, keys and files stay in the checkout.",
                                 button: "Uninstall", destructive: true) else { return }

@@ -6,7 +6,7 @@ Thanks for helping. The bar for a change is that it is measured or tested, and t
 
 ```sh
 cargo build --locked
-python3 scripts/granitectl.py scan          # what this machine can run, changes nothing
+python3 scripts/localfleet.py scan          # what this machine can run, changes nothing
 ```
 
 For control-plane work you do not need models: `workers/stub.py` is a deterministic stand-in worker.

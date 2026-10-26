@@ -1,28 +1,28 @@
 #!/bin/bash
-# Build GraniteBar in release mode and assemble an ad-hoc signed build/GraniteBar.app.
+# Build LocalFleet in release mode and assemble an ad-hoc signed build/LocalFleet.app.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-pkg="$here/GraniteBar"
-app="$here/build/GraniteBar.app"
-version="${GRANITEBAR_VERSION:-0.1.0}"
+pkg="$here/LocalFleet"
+app="$here/build/LocalFleet.app"
+version="${LOCALFLEET_VERSION:-${GRANITEBAR_VERSION:-0.1.0}}"
 
 swift build -c release --package-path "$pkg"
-bin="$(swift build -c release --package-path "$pkg" --show-bin-path)/GraniteBar"
+bin="$(swift build -c release --package-path "$pkg" --show-bin-path)/LocalFleet"
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$bin" "$app/Contents/MacOS/GraniteBar"
+cp "$bin" "$app/Contents/MacOS/LocalFleet"
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key><string>GraniteBar</string>
-    <key>CFBundleIdentifier</key><string>ai.granited.bar</string>
-    <key>CFBundleName</key><string>GraniteBar</string>
-    <key>CFBundleDisplayName</key><string>GraniteBar</string>
+    <key>CFBundleExecutable</key><string>LocalFleet</string>
+    <key>CFBundleIdentifier</key><string>ai.localfleet.app</string>
+    <key>CFBundleName</key><string>LocalFleet</string>
+    <key>CFBundleDisplayName</key><string>LocalFleet</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${version}</string>
     <key>CFBundleVersion</key><string>1</string>

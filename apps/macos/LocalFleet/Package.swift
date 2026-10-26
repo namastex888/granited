@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "GraniteBar",
+    name: "LocalFleet",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
-            name: "GraniteBar",
-            path: "Sources/GraniteBar"
+            name: "LocalFleet",
+            path: "Sources/LocalFleet"
         )
     ]
 )

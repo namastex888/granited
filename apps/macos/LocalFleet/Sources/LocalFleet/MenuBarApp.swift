@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-struct GraniteBarApp: App {
+struct LocalFleetApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var state = AppModel.shared
 
@@ -22,12 +22,12 @@ struct GraniteBarApp: App {
             MenuContent(state: state)
         } label: {
             Image(nsImage: StatusIcon.image(for: state.glance))
-                .accessibilityLabel((["granited: \(state.statusLine)"] + state.attentionReasons).joined(separator: "; "))
+                .accessibilityLabel((["LocalFleet: \(state.statusLine)"] + state.attentionReasons).joined(separator: "; "))
         }
         .menuBarExtraStyle(.menu)
         .commands {
             // While Settings is open the app is a regular app with a menu bar; give it the
-            // standard GraniteBar > Settings… (⌘,) item every Mac app has.
+            // standard LocalFleet > Settings… (⌘,) item every Mac app has.
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { PreferencesController.shared.show() }
                     .keyboardShortcut(",")
@@ -77,7 +77,7 @@ enum StatusIcon {
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = "granited"
+        image.accessibilityDescription = "LocalFleet"
         return image
     }
 
@@ -121,7 +121,7 @@ struct MenuContent: View {
         Button("Settings…") { PreferencesController.shared.show() }
             .keyboardShortcut(",")
         Divider()
-        Button("Quit GraniteBar") { NSApp.terminate(nil) }
+        Button("Quit LocalFleet") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
     }
 
