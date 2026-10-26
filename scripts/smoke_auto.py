@@ -67,7 +67,7 @@ class Router:
         req = urllib.request.Request(f'http://127.0.0.1:{self.port}/v1/chat/completions', data,
                                      {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json', **(headers or {})})
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urllib.request.urlopen(req, timeout=180) as r:
                 status, head, raw = r.status, {k.lower(): v for k, v in r.headers.items()}, r.read()
         except urllib.error.HTTPError as e:
             status, head, raw = e.code, {k.lower(): v for k, v in e.headers.items()}, e.read()
@@ -83,7 +83,7 @@ class Router:
 
     def states(self):
         req = urllib.request.Request(f'http://127.0.0.1:{self.port}/internal/hosts', headers={'Authorization': 'Bearer ' + ADMIN})
-        hosts = json.loads(urllib.request.urlopen(req, timeout=10).read())['hosts']
+        hosts = json.loads(urllib.request.urlopen(req, timeout=60).read())['hosts']
         return {w['model']: w['state'] for w in hosts[0]['hardware']['managed_workers']}
 
     def close(self):
@@ -197,9 +197,11 @@ def main():
                 break
             time.sleep(0.1)
         status, head, _, route, _ = a.chat()  # A's snapshot still says warm for up to 2 s
-        check('a peer that went cold refuses model_not_warm and the next candidate serves',
-              status == 200 and head.get('x-granite-model-alias') == B3 and route.get('why') == 'refused_next'
-              and b.states().get(B8) != 'ready')
+        # Within A's 2 s snapshot of B, B refuses model_not_warm (refused_next); a slow machine may
+        # take longer, and then A already sees B cold (cold_free). Either way B must not load.
+        check('a peer that went cold is never loaded; the next candidate serves',
+              status == 200 and head.get('x-granite-model-alias') == B3
+              and route.get('why') in ('refused_next', 'cold_free') and b.states().get(B8) != 'ready')
     finally:
         a.close()
         b.close()

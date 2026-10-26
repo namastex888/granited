@@ -1173,6 +1173,10 @@ fn normalize_chat(off_needs_t0: bool, value: &mut Value) -> Result<(), String> {
             .filter(|b| *b <= MAX_THINKING_BUDGET)
             .ok_or("thinking_budget_tokens must be an integer from 0 to 32768")?,
     };
+    if thinking && budget == 0 {
+        // llama.cpp treats a per-request 0 as no limit, so thinking would run unbounded.
+        return Err("thinking_budget_tokens 0 cannot stop thinking once it is on; send reasoning_effort off instead".into());
+    }
     if thinking {
         value["thinking_budget_tokens"] = json!(budget);
     } else if budget > 0 {
@@ -1368,6 +1372,13 @@ mod tests {
             let mut value = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":"low","thinking_budget_tokens":bad});
             assert!(normalize_chat(false, &mut value).is_err());
         }
+        let mut zero = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":"full","thinking_budget_tokens":0});
+        assert!(
+            normalize_chat(false, &mut zero).is_err(),
+            "a zero budget with thinking on is refused"
+        );
+        let mut zero_off = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":"off","thinking_budget_tokens":0});
+        assert!(normalize_chat(false, &mut zero_off).is_ok());
         let mut off = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":"off","thinking_budget_tokens":100});
         assert!(normalize_chat(false, &mut off).is_err());
     }
