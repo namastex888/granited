@@ -99,6 +99,12 @@ pub struct Reply {
     pub streamed: bool,
 }
 
+/// The capabilities whose replies report token usage. A reply from any other one carries no
+/// tokens by design, so it is a completed job, never a request "without usage".
+pub fn carries_tokens(capability: &str) -> bool {
+    matches!(capability, "chat" | "vision" | "adapters" | "embeddings")
+}
+
 pub fn now_ms() -> u64 {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
     now.unwrap_or_default().as_millis() as u64

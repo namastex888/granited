@@ -1896,10 +1896,12 @@ impl Meter {
             self.settle(activity::Outcome::Failed);
             return rest;
         }
-        let usage = reply.as_ref().and_then(|r| r.usage.as_ref());
-        if metered {
-            self.service
-                .count_usage(&self.model, usage.filter(|u| u.is_object()));
+        let usage = reply
+            .as_ref()
+            .and_then(|r| r.usage.as_ref())
+            .filter(|u| u.is_object());
+        if metered && (usage.is_some() || activity::carries_tokens(self.capability)) {
+            self.service.count_usage(&self.model, usage);
         } else {
             self.service.count_completed(&self.model);
         }

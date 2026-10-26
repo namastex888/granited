@@ -576,8 +576,10 @@ def main():
         status, _ = a.transcribe(SPEECH)
         _, metrics = get(a, '/internal/metrics')
         usage = metrics['usage']
-        check('a reply without usage counts the request and no tokens, and the block says so',
-              status == 200 and usage['models'][SPEECH] == dict(requests_completed=1, requests_without_usage=1,
+        # Transcription carries no tokens: a completed job, not one without usage. The chat reply above
+        # did lack its usage, so the block still says not every request reported it.
+        check('a transcription counts as a completed job with no tokens; the chat reply without usage still shows',
+              status == 200 and usage['models'][SPEECH] == dict(requests_completed=1, requests_without_usage=0,
                                                                prompt_tokens=0, cached_prompt_tokens=0, output_tokens=0)
               and usage['usage_reported'] is False)
         check('usage stays admin-only', get(a, '/internal/metrics', key=API)[0] == 401
@@ -697,6 +699,11 @@ def main():
         check('systemone input_tokens count as prompt tokens, and the request is not one without usage',
               metrics['usage']['models'][SWITCH] == dict(requests_completed=1, requests_without_usage=0, prompt_tokens=20,
                                                        cached_prompt_tokens=0, output_tokens=0))
+        models = metrics['usage']['models']
+        print('   without usage:', {m: models.get(m, {}).get('requests_without_usage') for m in (TTM, SPEECH, B3)})
+        check('forecast and transcription carry no tokens: completed jobs, not requests without usage',
+              models[TTM]['requests_without_usage'] == 0 and models[TTM]['requests_completed'] >= 1
+              and models[SPEECH]['requests_without_usage'] == 0 and models[SPEECH]['requests_completed'] >= 1)
         # A graceful stop drains requests in flight: this one finishes, counts, and is written before exit.
         with concurrent.futures.ThreadPoolExecutor(1) as pool:
             draining = pool.submit(post, r, '/v1/chat/completions', say('DRIP', stream=True))

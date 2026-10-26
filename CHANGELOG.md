@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Usage counters no longer list forecast, retrieval, transcription, speech and the other tokenless capabilities as requests "without usage". Their replies carry no tokens by design, so they count as completed jobs. Only chat, vision, adapters and embeddings replies that omit usage are counted as without usage, so `usage_reported` and the app's note now flag only real gaps.
 - The first requests after a manager restart no longer get `capacity_unavailable` for models on an operator-owned router. The manager now reads those routers once before it listens; before, it listened while that first read was still pending.
 - A manager killed outright (crash, OOM, SIGKILL) no longer leaves its node unable to serve: its orphaned workers held their ports, and the restarted manager refused them with `worker_port_in_use`. It now reaps exactly the workers its own ledger names. `scripts/smoke_mesh.py` covers a 3-node mesh in which one node dies and rejoins.
 - A transcription that one node forwards to a peer is served. The peer's `/v1/audio/transcriptions` now also takes the JSON form `{model, audio_base64}`; before, it took only multipart and refused the forwarded request with 400 `Invalid boundary`.
