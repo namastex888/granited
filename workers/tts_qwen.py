@@ -11,6 +11,12 @@ It stays in memory for that one request and is never written, cached or logged.
 With "stream": true the reply is a WAV header with an unknown length, then 16-bit PCM as it is
 generated: each step's codes are caught by a hook on the talker and decoded in small chunks, each
 with the preceding frames as left context (the codec decoder is causal).
+
+--runtime faster uses faster-qwen3-tts 0.5.4 (MIT), which captures the talker and code-predictor
+loops in CUDA graphs. The voice prompt is still built here from the in-memory waveform and passed
+as `voice_clone_prompt`, so the library's path-keyed prompt cache is never used.
+It needs transformers 5.15.1: 5.20.2 breaks qwen-tts-hf's rope compatibility shim
+(`MimiConfig` has no `rope_theta`), and 4.x lacks `standardize_rope_params`.
 """
 import argparse
 import base64
@@ -36,7 +42,12 @@ def parse():
     p.add_argument('--port', type=int, required=True)
     p.add_argument('--device', default='cpu', choices=['cpu', 'mps', 'cuda'])
     p.add_argument('--max-input-chars', type=int, default=1000)
-    return p.parse_args()
+    p.add_argument('--runtime', default='reference', choices=['reference', 'faster'])
+    p.add_argument('--chunk-frames', type=int, default=4, help='faster runtime: frames per streamed chunk')
+    args = p.parse_args()
+    if args.runtime == 'faster' and args.device != 'cuda':
+        p.error('--runtime faster captures CUDA graphs; it needs --device cuda')
+    return args
 
 
 def load(args):
@@ -44,7 +55,25 @@ def load(args):
     from qwen_tts import Qwen3TTSModel
 
     dtype = {'cpu': torch.float32, 'mps': torch.float16, 'cuda': torch.bfloat16}[args.device]
+    if args.runtime == 'faster':
+        from faster_qwen3_tts import FasterQwen3TTS
+
+        return FasterQwen3TTS.from_pretrained(args.weights, device=args.device, dtype=dtype)
     return Qwen3TTSModel.from_pretrained(args.weights, device_map=args.device, dtype=dtype)
+
+
+def faster_prompt(engine, ref_audio, ref_text):
+    """The library's ICL prompt, built from memory: 0.5 s of trailing silence keeps the reference's
+    last phoneme out of the start of the speech, as the library does for a file."""
+    audio, rate = ref_audio
+    audio = np.concatenate([audio, np.zeros(int(0.5 * rate), dtype=np.float32)])
+    items = engine.model.create_voice_clone_prompt(ref_audio=(audio, rate), ref_text=ref_text)
+    return engine.model._prompt_items_to_voice_clone_prompt(items)
+
+
+def faster_options(body):
+    options = {k: body[k] for k in ('temperature', 'top_p', 'max_new_tokens') if body.get(k) is not None}
+    return options
 
 
 def reference(clip):
@@ -94,6 +123,17 @@ def stream(model, args, body, emit):
     import torch
 
     text, ref_audio, ref_text, options = prepare(model, args, body)
+    if args.runtime == 'faster':
+        start, first, frames = time.perf_counter(), None, 0
+        prompt = faster_prompt(model, ref_audio, ref_text)
+        for chunk, _rate, _timing in model.generate_voice_clone_streaming(
+                text=text, language='Auto', voice_clone_prompt=prompt, ref_text=ref_text,
+                chunk_size=args.chunk_frames, **options):
+            emit((np.clip(np.asarray(chunk, dtype=np.float32).reshape(-1), -1, 1) * 32767).astype('<i2').tobytes())
+            first = first or time.perf_counter() - start
+            frames += 1
+        return dict(first_audio_ms=round((first or 0) * 1000, 1),
+                    synthesis_ms=round((time.perf_counter() - start) * 1000, 1), frames=frames)
     prompt = model.create_voice_clone_prompt(ref_audio=ref_audio, ref_text=ref_text)
     ref_code = prompt[0].ref_code
     eos = model.model.config.talker_config.codec_eos_token_id
@@ -160,7 +200,12 @@ def wav_header(rate):
 def synthesize(model, args, body):
     text, ref_audio, ref_text, options = prepare(model, args, body)
     start = time.perf_counter()
-    wavs, out_rate = model.generate_voice_clone(text=text, ref_audio=ref_audio, ref_text=ref_text, **options)
+    if args.runtime == 'faster':
+        wavs, out_rate = model.generate_voice_clone(
+            text=text, language='Auto', voice_clone_prompt=faster_prompt(model, ref_audio, ref_text),
+            ref_text=ref_text, **options)
+    else:
+        wavs, out_rate = model.generate_voice_clone(text=text, ref_audio=ref_audio, ref_text=ref_text, **options)
     elapsed = time.perf_counter() - start
     data, seconds = wav_bytes(out_rate, wavs[0])
     return data, dict(synthesis_ms=round(elapsed * 1000, 1), audio_ms=round(seconds * 1000, 1),
@@ -169,7 +214,8 @@ def synthesize(model, args, body):
 
 def serve(args, model):
     lock = threading.Lock()
-    identity = json.dumps({'model': args.model, 'revision': args.revision, 'backend': 'qwen-tts-0.1.1',
+    backend = 'faster-qwen3-tts-0.5.4' if args.runtime == 'faster' else 'qwen-tts-0.1.1'
+    identity = json.dumps({'model': args.model, 'revision': args.revision, 'backend': backend,
                            'device': args.device}).encode()
 
     class Handler(BaseHTTPRequestHandler):
