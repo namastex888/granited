@@ -63,7 +63,10 @@ struct ActivityReply: Decodable, Sendable, Equatable {
         var model: String?
         var capability: String
         var succeeded: Int64
+        /// Server-side failures only (5xx, 408, 429, broken stream, backend timeout or unreachable).
         var failed: Int64
+        /// The worker refused the request's input (a 4xx); engines before rejected was counted send none.
+        var rejected: Int64
         var cancelled: Int64
         /// Unit sums from parsed success responses.
         var units: [String: Double]
@@ -73,13 +76,13 @@ struct ActivityReply: Decodable, Sendable, Equatable {
         var unreadableUnits: [String] = []
 
         enum CodingKeys: String, CodingKey {
-            case start_unix_ms, model, capability, succeeded, failed, cancelled, units, units_unavailable
+            case start_unix_ms, model, capability, succeeded, failed, rejected, cancelled, units, units_unavailable
         }
 
         init(start_unix_ms: Int64, model: String? = nil, capability: String, succeeded: Int64 = 0, failed: Int64 = 0,
-             cancelled: Int64 = 0, units: [String: Double] = [:], units_unavailable: Int64 = 0) {
+             rejected: Int64 = 0, cancelled: Int64 = 0, units: [String: Double] = [:], units_unavailable: Int64 = 0) {
             self.start_unix_ms = start_unix_ms; self.model = model; self.capability = capability
-            self.succeeded = succeeded; self.failed = failed; self.cancelled = cancelled
+            self.succeeded = succeeded; self.failed = failed; self.rejected = rejected; self.cancelled = cancelled
             self.units = units; self.units_unavailable = units_unavailable
         }
 
@@ -99,6 +102,8 @@ struct ActivityReply: Decodable, Sendable, Equatable {
             }
             succeeded = try counter(.succeeded)
             failed = try counter(.failed)
+            // Absent from older engines (their 4xx replies were counted as failed); present but invalid is unreadable.
+            rejected = c.contains(.rejected) ? try counter(.rejected) : 0
             cancelled = try counter(.cancelled)
             units_unavailable = try counter(.units_unavailable)
             var units: [String: Double] = [:]
@@ -298,13 +303,14 @@ struct CapabilityRow: Sendable, Equatable, Identifiable {
     var title: String
     var succeeded: Int64 = 0
     var failed: Int64 = 0
+    var rejected: Int64 = 0
     var cancelled: Int64 = 0
     var units: [UnitValue] = []
     var unitsUnavailable: Int64 = 0
     /// nil: unknown (reported models can't be mapped yet).
     var installed: Bool?
 
-    var used: Bool { succeeded > 0 || failed > 0 || cancelled > 0 }
+    var used: Bool { succeeded > 0 || failed > 0 || rejected > 0 || cancelled > 0 }
     var idleStatus: String { installed == false ? "not installed" : "no activity today" }
     func unit(_ name: String) -> UnitValue? { units.first { $0.name == name } }
     /// The family's key unit, when it has one and jobs succeeded.
@@ -333,7 +339,7 @@ struct ActivityBucket: Sendable, Equatable {
 }
 
 /// Today's completed jobs across the fleet: counted once on the node that ran each job, summed
-/// over nodes, never estimated. Failed and cancelled jobs are separate counts, never jobs.
+/// over nodes, never estimated. Failed, rejected and cancelled jobs are separate counts, never jobs.
 struct ActivitySummary: Sendable, Equatable {
     static let pending = "Engine update pending: no job activity reported yet"
     static let olderEngine = "not reporting jobs (older engine)"
@@ -430,6 +436,7 @@ struct ActivitySummary: Sendable, Equatable {
                 var row = rows[b.capability] ?? CapabilityRow(id: b.capability, title: ActivityCatalog.title(b.capability))
                 row.succeeded = add(row.succeeded, b.succeeded)
                 row.failed = add(row.failed, b.failed)
+                row.rejected = add(row.rejected, b.rejected)
                 row.cancelled = add(row.cancelled, b.cancelled)
                 row.unitsUnavailable = add(row.unitsUnavailable, b.units_unavailable)
                 rows[b.capability] = row

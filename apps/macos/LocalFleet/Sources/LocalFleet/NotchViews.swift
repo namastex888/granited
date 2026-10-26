@@ -649,7 +649,7 @@ struct TodayPresentation: Equatable {
     }
 }
 
-/// One level deeper than Today: chat tokens, failed and cancelled jobs, per-node coverage and each
+/// One level deeper than Today: chat tokens, failed, rejected and cancelled jobs, per-node coverage and each
 /// token source (the fleet and oMLX, never summed), with oMLX's measured phases and memory
 /// pressure. Nothing here is estimated except the labelled by-midnight pace on a source.
 struct DiagnosticsPresentation: Equatable {
@@ -675,7 +675,8 @@ struct DiagnosticsPresentation: Equatable {
             chatTokens = []
         }
         failures = a.rows.compactMap { row in
-            let parts = [row.failed > 0 ? "\(row.failed) failed" : nil, row.cancelled > 0 ? "\(row.cancelled) cancelled" : nil]
+            let parts = [row.failed > 0 ? "\(row.failed) failed" : nil, row.rejected > 0 ? "\(row.rejected) rejected" : nil,
+                         row.cancelled > 0 ? "\(row.cancelled) cancelled" : nil]
                 .compactMap { $0 }
             return parts.isEmpty ? nil : "\(row.title): " + parts.joined(separator: ", ")
         }
@@ -810,7 +811,7 @@ struct DiagnosticsView: View {
         VStack(alignment: .leading, spacing: 10) {
             section("Chat tokens today", d.chatTokens, empty: "No chat jobs today")
                 .opacity(NotchDisplay.opacity(display.activityFreshness))
-            section("Failed and cancelled", d.failures, empty: "None today")
+            section("Failed, rejected and cancelled", d.failures, empty: "None today")
                 .opacity(NotchDisplay.opacity(display.activityFreshness))
             section("Coverage", d.coverage, empty: "No activity report yet")
             VStack(alignment: .leading, spacing: 0) {

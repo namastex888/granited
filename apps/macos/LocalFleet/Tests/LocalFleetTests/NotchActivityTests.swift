@@ -161,6 +161,23 @@ private func decode(_ json: String) throws -> ActivityReply {
         #expect(DiagnosticsPresentation(snap).failures == ["Chat: 2 failed, 1 cancelled", "Guardian: 1 failed"])
     }
 
+    @Test func rejectedInputIsItsOwnCountAndMakesTheRowUsed() {
+        let day = self.day
+        let reply = ActivityReply(hosts: [.init(host: "mac", buckets: [
+            .init(start_unix_ms: day.sinceMs, capability: "forecast", succeeded: 1, failed: 1, rejected: 2),
+            .init(start_unix_ms: day.sinceMs, capability: "retrieval", rejected: 1),
+        ])])
+        var snap = NotchSnapshot()
+        snap.activity = ActivitySummary.derive(reply, day: day, installed: nil)
+        #expect(snap.activity.jobsToday == .value(1))
+        // A family with only rejected requests was still used today; it is not shown as idle.
+        let retrieval = snap.activity.rows.first { $0.id == "retrieval" }
+        #expect(retrieval?.used == true)
+        #expect(retrieval?.rejected == 1)
+        #expect(retrieval?.failed == 0)
+        #expect(DiagnosticsPresentation(snap).failures == ["Forecast: 1 failed, 2 rejected", "Retrieval: 1 rejected"])
+    }
+
     @Test func usedCapabilitiesComeFirstThenIdleThenNotInstalled() {
         let day = self.day
         let reply = ActivityReply(hosts: [.init(host: "mac", buckets: [
@@ -270,6 +287,24 @@ private func decode(_ json: String) throws -> ActivityReply {
         #expect(s.jobsToday == .value(2))
         #expect(s.partial)
         #expect(s.partialReasons.contains("a node's activity record couldn't be read"))
+    }
+
+    @Test func rejectedIsReadWhenPresentAndZeroFromOlderEngines() throws {
+        let buckets = [bucket(#""capability":"forecast","succeeded":1,"rejected":3,"units":{"forecast_steps":8},\#(counters)"#),
+                       bucket(#""capability":"chat","succeeded":2,"units":{"prompt_tokens":20,"output_tokens":10},\#(counters)"#)]
+        let s = ActivitySummary.derive(try decode(#"{"hosts":[\#(host(buckets.joined(separator: ",")))]}"#), day: day, installed: nil)
+        #expect(s.rows.first { $0.id == "forecast" }?.rejected == 3)
+        #expect(s.rows.first { $0.id == "chat" }?.rejected == 0)
+        // A bucket without the key (an older engine) is read, not dropped as unreadable.
+        #expect(s.coverage.first?.incomplete == nil)
+        #expect(s.jobsToday == .value(3))
+    }
+
+    @Test func anInvalidRejectedCounterMakesTheBucketUnreadable() throws {
+        let reply = try decode(#"{"hosts":[\#(host(bucket(#""capability":"forecast","succeeded":1,"rejected":"some",\#(counters)"#)))]}"#)
+        let s = ActivitySummary.derive(reply, day: day, installed: nil)
+        #expect(s.coverage.first?.notReporting == ActivitySummary.notReadable)
+        #expect(s.jobsToday.value == nil)
     }
 
     @Test func aMalformedBucketMarksTheHostIncomplete() throws {
