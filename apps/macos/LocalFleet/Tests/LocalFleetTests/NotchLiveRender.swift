@@ -30,7 +30,7 @@ import Testing
         """
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         try report.write(toFile: dir + "/live-state.txt", atomically: true, encoding: .utf8)
-        for (expanded, tab, size) in [(false, NotchTab.production, CGSize(width: 270, height: 28))]
+        for (expanded, tab, size) in [(false, NotchTab.today, CGSize(width: 270, height: 28))]
             + NotchTab.allCases.map({ (true, $0, CGSize(width: 650, height: 380)) }) {
             let img = try #require(NotchController.renderPreview(snapshot: t.snapshot, freshness: t.freshness,
                                                                  activeHistory: t.activeHistory, expanded: expanded,

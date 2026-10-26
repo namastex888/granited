@@ -96,6 +96,13 @@ def main():
             status, _, raw = call(a_port, '/internal/hosts', key=ADMIN)
             served = [h['usage']['models'][model]['requests_completed'] for h in json.loads(raw)['hosts']] if status == 200 else []
             checks.append(('each request is counted once, by the host that ran it', served == [1, 3]))
+            done, _, report = call(a_port, '/internal/activity', key=ADMIN)
+            fleet = json.loads(report)['hosts'] if done == 200 else []
+            ran = [(h['host'], sum(b['succeeded'] for b in h['buckets']), sum(b['failed'] + b['cancelled'] for b in h['buckets']))
+                   for h in fleet]
+            # B's refusal before running is a retry, not a failure: the fallback is one job, on A.
+            checks.append(('activity: a host that refused counts nothing; the fleet has 4 succeeded jobs and 0 failed',
+                           ran == [('a', 1, 0), ('b', 3, 0)]))
             hosts = json.loads(raw)['hosts'] if status == 200 else []
             labelled = [h['clients']['last_seen_unix_ms'] for h in hosts]
             checks.append(('a labelled request through A to B counts its client once, on A',

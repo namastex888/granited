@@ -43,6 +43,8 @@ Any OpenAI SDK works: set `base_url` to `http://127.0.0.1:8310/v1`. `auto` works
 
 Send `X-LocalFleet-Client: <name>` (1–32 of `a-z 0-9 . _ -`) to have the admin view (`/internal/metrics`, `/internal/hosts`) count your app's requests by name. The name is self-declared, counted only on the node the request enters, and never used for routing, admission or auth. Requests through a LiteLLM proxy (`:8300`) count as unidentified: LiteLLM passes `x-` headers on only with `forward_client_headers_to_llm_api`, which would also pass on a spoofable `x-granite-hop`.
 
+The admin view `GET /internal/activity?since_unix_ms=&until_unix_ms=` lists the jobs each node ran, per 15-minute UTC bucket, model and capability: `succeeded`, `failed`, `cancelled` and the work units each reply reported (tokens for chat, vectors for embeddings, audio seconds for speech, and so on), plus each node's uptime as `coverage`. A request forwarded to a peer is counted by the peer only, so the fleet total counts every job once. One request spans at most 35 days. For chat, `output_tokens` is everything generated, thinking included; `reasoning_tokens`, when present, is a share of it, never extra. A graceful stop lets requests in flight finish and count; a request in flight when the process is killed records no outcome, and a crash loses at most the last 30 s of counts.
+
 | Endpoint | What it does |
 | --- | --- |
 | `/v1/chat/completions` | Chat and reasoning. `model: "auto"` or a model name; `reasoning_effort` off, low or full; `max_tokens` is the reply, `thinking_budget_tokens` caps thinking |

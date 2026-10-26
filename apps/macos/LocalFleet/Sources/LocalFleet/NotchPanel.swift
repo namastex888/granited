@@ -7,7 +7,7 @@ final class NotchModel: ObservableObject {
     @Published var layout = NotchLayout(cameraWidth: 0, barHeight: 24, wingWidth: NotchLayout.defaultWing,
                                         expandedSize: CGSize(width: 650, height: 380))
     @Published var expanded = false
-    @Published var tab: NotchTab = .production
+    @Published var tab: NotchTab = .today
     @Published var pinned = false
     var actions = NotchActions()
 }
@@ -15,7 +15,7 @@ final class NotchModel: ObservableObject {
 extension NotchTelemetry {
     var display: NotchDisplay {
         NotchDisplay(snapshot: snapshot, freshness: freshness, activeHistory: activeHistory,
-                     engineFreshness: engineFreshness, omlxFreshness: omlxFreshness)
+                     engineFreshness: engineFreshness, omlxFreshness: omlxFreshness, activityFreshness: activityFreshness)
     }
 }
 
@@ -136,13 +136,18 @@ final class NotchController {
 
     /// Renders the notch for the given data offscreen (2x), for evidence images from fixtures.
     /// Collapsed: the trigger at `size`. Expanded: the body alone at `size`, every row drawn
-    /// without scrolling, so `size.height` is a minimum and the image grows to fit. `engineFreshness` and `omlxFreshness` default to `freshness`.
+    /// without scrolling, so `size.height` is a minimum and the image grows to fit. `engineFreshness` and `omlxFreshness` default to `freshness`;
+    /// `activityFreshness` defaults to `engineFreshness`.
     static func renderPreview(snapshot: NotchSnapshot, freshness: Freshness, activeHistory: [TimePoint],
                               expanded: Bool, tab: NotchTab, size: CGSize,
-                              engineFreshness: Freshness? = nil, omlxFreshness: Freshness? = nil) -> NSImage? {
+                              engineFreshness: Freshness? = nil, omlxFreshness: Freshness? = nil,
+                              activityFreshness: Freshness? = nil, expandDetails: Bool = true) -> NSImage? {
+        var layout = NotchLayout.preview(size: size, expanded: expanded)
+        layout.expandPreviewDetails = expandDetails
         let view = NotchSurface(display: NotchDisplay(snapshot: snapshot, freshness: freshness, activeHistory: activeHistory,
-                                                      engineFreshness: engineFreshness, omlxFreshness: omlxFreshness),
-                                layout: .preview(size: size, expanded: expanded), expanded: expanded,
+                                                      engineFreshness: engineFreshness, omlxFreshness: omlxFreshness,
+                                                      activityFreshness: activityFreshness),
+                                layout: layout, expanded: expanded,
                                 tab: .constant(tab))
             .frame(width: size.width, height: expanded ? nil : size.height)
         let renderer = ImageRenderer(content: view)

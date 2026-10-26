@@ -55,7 +55,7 @@ import Testing
 
     private func render(_ s: NotchSnapshot, _ fresh: Freshness, _ name: String, history: [TimePoint] = []) throws {
         try save(NotchController.renderPreview(snapshot: s, freshness: fresh, activeHistory: history,
-                                               expanded: false, tab: .production, size: collapsed), "\(name)-collapsed")
+                                               expanded: false, tab: .today, size: collapsed), "\(name)-collapsed")
         for tab in NotchTab.allCases {
             try save(NotchController.renderPreview(snapshot: s, freshness: fresh, activeHistory: history,
                                                    expanded: true, tab: tab, size: expanded), "\(name)-\(tab.rawValue)")

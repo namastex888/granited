@@ -4,20 +4,20 @@ import SwiftUI
 // MARK: - Inputs
 
 enum NotchTab: String, CaseIterable, Identifiable, Sendable {
-    case production, demand, energy
+    case today, now, energy
 
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .production: "Production"
-        case .demand: "Demand"
+        case .today: "Today"
+        case .now: "Now"
         case .energy: "Energy"
         }
     }
     var hint: String {
         switch self {
-        case .production: "Shows output rate, today's output and the midnight estimate"
-        case .demand: "Shows requests, slots, rejections and nodes"
+        case .today: "Shows today's completed jobs by capability"
+        case .now: "Shows requests, slots, rejections, models and nodes"
         case .energy: "Shows power sensors and memory"
         }
     }
@@ -34,18 +34,18 @@ struct NotchDisplay {
     var engineFreshness: Freshness
     /// Local oMLX server.
     var omlxFreshness: Freshness
+    /// The activity report behind the job counts (trigger and Production).
+    var activityFreshness: Freshness
 
     init(snapshot: NotchSnapshot, freshness: Freshness, activeHistory: [TimePoint],
-         engineFreshness: Freshness? = nil, omlxFreshness: Freshness? = nil) {
+         engineFreshness: Freshness? = nil, omlxFreshness: Freshness? = nil, activityFreshness: Freshness? = nil) {
         self.snapshot = snapshot
         self.freshness = freshness
         self.activeHistory = activeHistory
         self.engineFreshness = engineFreshness ?? freshness
         self.omlxFreshness = omlxFreshness ?? freshness
+        self.activityFreshness = activityFreshness ?? engineFreshness ?? freshness
     }
-
-    var isLive: Bool { freshness == .live }
-    var engineLive: Bool { engineFreshness == .live }
 
     /// Freshness of one source, by ProductionSource id ("engine", "omlx") or source name.
     func freshness(ofSource source: String) -> Freshness {
@@ -75,6 +75,7 @@ struct NotchLayout: Equatable {
     /// Offscreen render: tabs draw every row at full height instead of inside a ScrollView,
     /// which ImageRenderer cannot draw. `expandedSize.height` is then a minimum.
     var isPreview = false
+    var expandPreviewDetails = true
 
     static let bodyShoulder: CGFloat = 12
     static let bodyCorner: CGFloat = 22
@@ -150,7 +151,33 @@ enum NotchFormat {
         return low == high ? low : "\(low)–\(high)"
     }
 
-    static func rate(_ r: Double) -> String { r.formatted(.number.precision(.fractionLength(0))) }
+    /// Whole numbers from 10 up, one decimal below 10, two below 1; a positive rate never reads 0.
+    static func rate(_ r: Double) -> String {
+        guard r.isFinite else { return "—" }
+        if r == 0 { return "0" }
+        if r > 0, r < 0.005 { return "<0.01" }
+        let digits = abs(r) >= 10 ? 0 : abs(r) >= 1 ? 1 : 2
+        return r.formatted(.number.precision(.fractionLength(digits)))
+    }
+
+    /// Counts (jobs, vectors, steps): exact below 1,000, then 1.2k / 842k / 1.2M.
+    static func count(_ n: Int64) -> String { tokens(n) }
+
+    /// Audio length: "42 s", "12 min 5 s", "1 h 12 min".
+    static func duration(_ seconds: Double) -> String {
+        if seconds < 10 { return String(format: "%.1f s", seconds) }
+        if seconds < 60 { return String(format: "%.0f s", seconds) }
+        let total = Int(seconds.rounded())
+        if total < 3_600 { return total % 60 == 0 ? "\(total / 60) min" : "\(total / 60) min \(total % 60) s" }
+        return "\(total / 3_600) h \((total % 3_600) / 60) min"
+    }
+
+    /// One work unit: "1.2M output tokens", "12 min 5 s of audio".
+    static func unit(_ name: String, _ value: Double) -> String {
+        let label = ActivityCatalog.unitLabel(name)
+        if name == "audio_seconds" { return "\(duration(value)) \(label)" }
+        return "\(count(Int64(value.rounded()))) \(label)"
+    }
     static func watts(_ w: Double) -> String { String(format: "%.0f W", w) }
 
     static func wattHours(_ wh: Double) -> String {
@@ -187,43 +214,38 @@ extension Reading {
 }
 
 extension NotchDisplay {
-    /// Short state for the collapsed wing when there is no rate to show.
-    var rateState: String {
-        if case .offline = freshness { return "offline" }
-        if case .stale = freshness { return "stale" }
-        if case .collecting = snapshot.outputRate { return "measuring" }
+    /// Short state for the trigger when there is no job count to show.
+    var jobsState: String {
+        if case .offline = activityFreshness { return "offline" }
+        if case .stale = activityFreshness { return "stale" }
+        if case .collecting = snapshot.activity.jobsToday { return "waiting" }
         return "no data"
     }
 
-    /// The series the small sparkline draws and what it means, or nil when neither has two points.
-    var sparkline: (points: [TimePoint], label: String)? {
-        if snapshot.rateHistory.count >= 2 { return (snapshot.rateHistory, "Completed output rate, last 60 s") }
-        if activeHistory.count >= 2 { return (activeHistory, "Active requests, last 60 s") }
-        return nil
-    }
-
-    /// Production reports the headline source; Demand and Energy report the fleet engine.
+    /// Today reports the activity report; Demand and Energy report the fleet engine.
     func statusLine(for tab: NotchTab) -> String? {
-        let (f, prefix) = tab == .production ? (freshness, "") : (engineFreshness, "Fleet ")
+        let (f, prefix) = tab == .today ? (activityFreshness, "Activity report ") : (engineFreshness, "Fleet ")
         switch f {
         case .live: return nil
-        case .stale(let since): return "\(prefix)telemetry stale since \(NotchFormat.time(since))".capitalizedFirst
-        case .offline(let why): return "\(prefix)offline · \(why)".capitalizedFirst
+        case .stale(let since): return "\(prefix)stale since \(NotchFormat.time(since))"
+        case .offline(let why): return "\(prefix)offline · \(why)"
         }
     }
 
     var accessibilitySummary: String {
-        let source = snapshot.productionSource.isEmpty ? "" : " from \(snapshot.productionSource)"
-        let rate = snapshot.outputRate.value.map { "\(NotchFormat.rate($0)) tokens per second\(source)" }
-            ?? "output rate \(snapshot.outputRate.reason ?? "unavailable")"
+        let a = snapshot.activity
+        let jobs = a.jobsToday.value.map { "\(plural(Int(clamping: $0), "completed job")) today" }
+            ?? "completed jobs today: \(a.jobsToday.reason ?? "unavailable")"
+        let recent = a.recentJob ? ", a job finished in the last minute" : ""
+        let partial = a.partial ? ", partial coverage" : ""
         let active = snapshot.activeRequests.value.map { plural($0, "active request") }
             ?? "active requests \(snapshot.activeRequests.reason ?? "unavailable")"
-        let fresh = switch freshness {
-        case .live: "telemetry live"
-        case .stale(let since): "telemetry stale since \(NotchFormat.time(since))"
-        case .offline(let why): "telemetry offline: \(why)"
+        let fresh = switch activityFreshness {
+        case .live: "activity live"
+        case .stale(let since): "activity stale since \(NotchFormat.time(since))"
+        case .offline(let why): "activity offline: \(why)"
         }
-        return "LocalFleet: \(rate), \(active), \(fresh)"
+        return "LocalFleet: \(jobs)\(recent)\(partial), \(active), \(fresh)"
     }
 }
 
@@ -297,15 +319,8 @@ struct NotchBody: View {
                                corner: NotchLayout.bodyCorner)
         let inset = NotchLayout.bodyShoulder + 22
         VStack(spacing: 0) {
-            ZStack {
-                NotchTabBar(tab: $tab, wantsFocus: pinned)
-                HStack {
-                    Spacer(minLength: 0)
-                    ActiveIndicator(display: display)
-                        .opacity(display.isLive ? 1 : NotchStyle.dimmed)
-                }
-            }
-            .padding(.top, 10)
+            NotchTabBar(tab: $tab, wantsFocus: pinned)
+                .padding(.top, 10)
 
             VStack(alignment: .leading, spacing: 8) {
                 if let status = display.statusLine(for: tab) {
@@ -347,8 +362,8 @@ struct NotchBody: View {
     @ViewBuilder private var tabContent: some View {
         Group {
             switch tab {
-            case .production: ProductionTab(display: display)
-            case .demand: DemandTab(display: display)
+            case .today: TodayTab(display: display, expandAll: layout.isPreview && layout.expandPreviewDetails)
+            case .now: NowTab(display: display)
             case .energy: EnergyTab(display: display)
             }
         }
@@ -372,38 +387,8 @@ struct NotchSurface: View {
     }
 }
 
-/// Active requests and the 60 s sparkline (output rate when measured, else active requests).
-struct ActiveIndicator: View {
-    let display: NotchDisplay
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Group {
-                if let n = display.snapshot.activeRequests.value {
-                    HStack(alignment: .firstTextBaseline, spacing: 3) {
-                        Text("\(n)").font(NotchStyle.number(13, .bold)).foregroundStyle(NotchStyle.primary)
-                        Text("active").font(.system(size: 11, weight: .medium)).foregroundStyle(NotchStyle.secondary)
-                    }
-                } else {
-                    Text("— active").font(.system(size: 11, weight: .medium)).foregroundStyle(NotchStyle.secondary)
-                }
-            }
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            if let line = display.sparkline {
-                Sparkline(points: line.points)
-                    .frame(width: 30, height: 12)
-                    .help(line.label)
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Active requests")
-        .accessibilityValue(display.snapshot.activeRequests.value.map(String.init)
-            ?? display.snapshot.activeRequests.reason ?? "unavailable")
-    }
-}
-
-/// Mark + rate, then the camera housing, which stays empty at the right end of the shape.
+/// Mark + today's completed jobs (and a dot when a job finished in the last minute), then the
+/// camera housing, which stays empty at the right end of the shape.
 struct NotchWings: View {
     let display: NotchDisplay
     let cameraWidth: CGFloat
@@ -414,7 +399,7 @@ struct NotchWings: View {
             left.frame(maxWidth: wingWidth ?? .infinity, alignment: .leading)
             Color.clear.frame(width: cameraWidth)
         }
-        .opacity(display.isLive ? 1 : NotchStyle.dimmed)
+        .opacity(NotchDisplay.opacity(display.activityFreshness))
     }
 
     private var left: some View {
@@ -431,13 +416,16 @@ struct NotchWings: View {
             .foregroundStyle(NotchStyle.primary)
             .accessibilityHidden(true)
 
-            if let rate = display.snapshot.outputRate.value {
+            if let n = display.snapshot.activity.jobsToday.value {
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Text(NotchFormat.rate(rate)).font(NotchStyle.number(13, .bold)).foregroundStyle(NotchStyle.primary)
-                    Text("tok/s").font(.system(size: 11, weight: .medium)).foregroundStyle(NotchStyle.secondary)
+                    Text(NotchFormat.count(n)).font(NotchStyle.number(13, .bold)).foregroundStyle(NotchStyle.primary)
+                    Text(n == 1 ? "job" : "jobs").font(.system(size: 11, weight: .medium)).foregroundStyle(NotchStyle.secondary)
+                }
+                if display.snapshot.activity.recentJob {
+                    Circle().fill(NotchStyle.mint).frame(width: 5, height: 5).accessibilityHidden(true)
                 }
             } else {
-                Text("— \(display.rateState)").font(.system(size: 11, weight: .medium)).foregroundStyle(NotchStyle.secondary)
+                Text("— \(display.jobsState)").font(.system(size: 11, weight: .medium)).foregroundStyle(NotchStyle.secondary)
             }
         }
         .lineLimit(1)
@@ -545,28 +533,6 @@ struct ColumnDivider: View {
     var body: some View { Rectangle().fill(NotchStyle.hairline).frame(width: 1, height: 36) }
 }
 
-/// One labelled row: label (and optional muted lines) on the left, value block on the right.
-struct NotchRow<Value: View>: View {
-    let label: String
-    var details: [String] = []
-    @ViewBuilder var value: Value
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label).font(.system(size: 12)).foregroundStyle(NotchStyle.primary)
-                ForEach(details, id: \.self) { line in
-                    Text(line).font(.system(size: 10).monospacedDigit()).foregroundStyle(NotchStyle.tertiary).lineLimit(1)
-                }
-            }
-            Spacer(minLength: 12)
-            value
-        }
-        .padding(.vertical, 5)
-        .accessibilityElement(children: .combine)
-    }
-}
-
 struct Hairline: View {
     var body: some View { Rectangle().fill(NotchStyle.hairline).frame(height: 1) }
 }
@@ -595,260 +561,374 @@ struct SectionLabel: View {
     }
 }
 
-// MARK: - Charts
+// MARK: - Tabs
 
-/// Maps time points to a rect: x over the 60 s that end at the newest point, y from 0 to `top`.
-private struct SeriesScale {
-    let end: Date
-    let span: TimeInterval
-    let top: Double
-
-    /// Points inside the window, oldest first.
-    static func window(_ points: [TimePoint]) -> [TimePoint] {
-        guard let end = points.map(\.at).max() else { return [] }
-        return points.filter { end.timeIntervalSince($0.at) <= NotchSnapshot.rateWindow }.sorted { $0.at < $1.at }
+/// What Today shows, as plain values: the view draws only this, and tests read it. One headline
+/// (completed jobs), one line per capability with completed jobs and its key unit, the activity
+/// chart's time labels and one coverage line. Everything else is in Diagnostics.
+struct TodayPresentation: Equatable {
+    struct Line: Identifiable, Equatable {
+        var id: String
+        var title: String
+        var value: String
+        var detail: String?
     }
 
-    func point(_ p: TimePoint, in size: CGSize) -> CGPoint {
-        let x = 1 - min(max(end.timeIntervalSince(p.at) / span, 0), 1)
-        let y = top > 0 ? min(max(p.value / top, 0), 1) : 0
-        return CGPoint(x: x * size.width, y: size.height - y * size.height)
+    struct AxisMark: Equatable {
+        var label: String
+        /// Position from local midnight (0) to now (1).
+        var at: Double
     }
 
-    func line(_ points: [TimePoint], in size: CGSize) -> Path {
-        var path = Path()
-        for (i, p) in points.enumerated() {
-            let pt = point(p, in: size)
-            if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+    var headline: String
+    var headlineUnit: String
+    var breakdown: [Line]
+    var axis: [AxisMark]
+    var footer: String?
+    /// All 13 families (and any unrecognised one): completed jobs, or why there are none.
+    var all: [Line]
+
+    init(_ a: ActivitySummary, calendar: Calendar = .current) {
+        if let n = a.jobsToday.value {
+            headline = NotchFormat.count(n)
+            headlineUnit = n == 1 ? "completed job" : "completed jobs"
+        } else {
+            headline = "—"
+            headlineUnit = a.jobsToday.reason ?? "unavailable"
         }
-        return path
-    }
-
-    func area(_ points: [TimePoint], in size: CGSize) -> Path {
-        guard let first = points.first, let last = points.last else { return Path() }
-        var path = line(points, in: size)
-        path.addLine(to: CGPoint(x: point(last, in: size).x, y: size.height))
-        path.addLine(to: CGPoint(x: point(first, in: size).x, y: size.height))
-        path.closeSubpath()
-        return path
-    }
-
-    /// A rounded ceiling with three equal steps (1, 2, 2.5 or 5 × 10ⁿ).
-    static func niceStep(for maxValue: Double) -> Double {
-        let raw = max(maxValue, 1) / 3
-        let magnitude = pow(10, floor(log10(raw)))
-        let step = [1, 2, 2.5, 5, 10].map { $0 * magnitude }.first { $0 >= raw } ?? raw
-        return step
-    }
-}
-
-struct Sparkline: View {
-    let points: [TimePoint]
-
-    var body: some View {
-        GeometryReader { g in
-            let sorted = SeriesScale.window(points)
-            if let last = sorted.last, sorted.count >= 2 {
-                let top = max(sorted.map(\.value).max() ?? 0, 0)
-                let scale = SeriesScale(end: last.at, span: NotchSnapshot.rateWindow, top: top > 0 ? top * 1.1 : 1)
-                scale.line(sorted, in: g.size)
-                    .stroke(NotchStyle.mint, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+        breakdown = a.rows.filter { $0.succeeded > 0 }.map { row in
+            let detail = row.keyUnit.map { unit in
+                Self.unit(unit) + (row.unitsUnavailable > 0 && unit.value != nil ? " · partial" : "")
             }
+            return Line(id: row.id, title: row.title, value: Self.jobs(row.succeeded), detail: detail)
         }
-        .accessibilityHidden(true)
+        all = a.rows.map { row in
+            let value = row.succeeded > 0 ? Self.jobs(row.succeeded) : row.used ? "no completed jobs" : row.idleStatus
+            return Line(id: row.id, title: row.title, value: value)
+        }
+        axis = Self.axis(since: a.dayStart, until: a.until, calendar: calendar)
+        footer = Self.footer(a)
+    }
+
+    /// Every string the primary Today view draws (the disclosures excluded).
+    var primaryTexts: [String] {
+        ["\(headline) \(headlineUnit)"] + breakdown.flatMap { [$0.title, $0.value] + [$0.detail].compactMap { $0 } }
+            + axis.map(\.label) + [footer].compactMap { $0 }
+    }
+
+    static func jobs(_ n: Int64) -> String { "\(NotchFormat.count(n)) \(n == 1 ? "job" : "jobs")" }
+
+    static func unit(_ u: UnitValue) -> String {
+        u.value.map { NotchFormat.unit(u.name, $0) } ?? "\(ActivityCatalog.unitNoun(u.name)) unavailable"
+    }
+
+    /// Local midnight, the 06:00 / 12:00 / 18:00 marks that fit, and "now".
+    static func axis(since: Date?, until: Date?, calendar: Calendar) -> [AxisMark] {
+        guard let since, let until, until > since else { return [] }
+        let span = until.timeIntervalSince(since)
+        let marks: [AxisMark] = [6, 12, 18].compactMap { hour in
+            guard let mark = calendar.date(bySettingHour: hour, minute: 0, second: 0, of: since) else { return nil }
+            let at = mark.timeIntervalSince(since) / span
+            return at > 0.12 && at < 0.85 ? AxisMark(label: NotchFormat.time(mark), at: at) : nil
+        }
+        return [AxisMark(label: NotchFormat.time(since), at: 0)] + marks + [AxisMark(label: "now", at: 1)]
+    }
+
+    static func footer(_ a: ActivitySummary) -> String? {
+        if let first = a.partialReasons.first {
+            return "Partial · \(first)" + (a.partialReasons.count > 1 ? " · more in Diagnostics" : "")
+        }
+        let reporting = a.coverage.filter(\.reporting)
+        guard let since = reporting.compactMap(\.since).min() else { return nil }
+        let gaps = reporting.reduce(0) { $0 + $1.gaps }
+        if Set(reporting.compactMap(\.since)).count > 1 {
+            return "Coverage varies by node · see Diagnostics"
+        }
+        let nodes = reporting.count == 1 ? "1 node" : "all \(reporting.count) nodes"
+        return "Covered since \(NotchFormat.time(since)) on \(nodes)" + (gaps > 0 ? " · \(plural(gaps, "gap"))" : "")
     }
 }
 
-/// Completed-output rate over the last 60 s: a thin mint line with a faint fill and real axes.
-/// With fewer than two points it shows the reason instead of a line.
-struct RateChart: View {
-    let points: [TimePoint]
-    let emptyReason: String
+/// One level deeper than Today: chat tokens, failed and cancelled jobs, per-node coverage and each
+/// token source (the fleet and oMLX, never summed), with oMLX's measured phases and memory
+/// pressure. Nothing here is estimated except the labelled by-midnight pace on a source.
+struct DiagnosticsPresentation: Equatable {
+    var chatTokens: [String]
+    var failures: [String]
+    var coverage: [String]
+    var sources: [ProductionSource]
+    var omlxModels: [ModelLine]
+    var omlxPressure: String?
 
-    private let gutter: CGFloat = 30
+    init(_ s: NotchSnapshot) {
+        let a = s.activity
+        if let chat = a.rows.first(where: { $0.id == "chat" }), chat.succeeded > 0 {
+            var lines: [String] = []
+            if let out = chat.unit("output_tokens") { lines.append(TodayPresentation.unit(out)) }
+            if let reasoning = chat.unit("reasoning_tokens")?.value {
+                lines.append("of which reasoning \(NotchFormat.count(Int64(reasoning.rounded())))")
+            }
+            if let prompt = chat.unit("prompt_tokens") { lines.append(TodayPresentation.unit(prompt)) }
+            if chat.unitsUnavailable > 0 { lines.append("units missing for \(plural(Int(clamping: chat.unitsUnavailable), "job"))") }
+            chatTokens = lines
+        } else {
+            chatTokens = []
+        }
+        failures = a.rows.compactMap { row in
+            let parts = [row.failed > 0 ? "\(row.failed) failed" : nil, row.cancelled > 0 ? "\(row.cancelled) cancelled" : nil]
+                .compactMap { $0 }
+            return parts.isEmpty ? nil : "\(row.title): " + parts.joined(separator: ", ")
+        }
+        let hostReasons = Set(a.coverage.map(\.host))
+        coverage = a.coverage.map(Self.coverageLine)
+            + a.partialReasons.filter { reason in !hostReasons.contains { reason.hasPrefix($0) } }
+        sources = s.sources
+        omlxModels = s.models.filter { $0.source == NotchSnapshot.omlxSourceName }
+        omlxPressure = s.omlxPressure
+    }
+
+    static func coverageLine(_ c: HostCoverage) -> String {
+        if let note = c.notReporting { return "\(c.host) \(note)" }
+        guard let since = c.since else { return "\(c.host) no coverage today" }
+        return (["\(c.host) since \(NotchFormat.time(since))", c.gaps > 0 ? plural(c.gaps, "gap") : nil, c.incomplete]
+            as [String?]).compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+struct TodayTab: View {
+    let display: NotchDisplay
+    @State private var showAll: Bool
+    @State private var showDiagnostics: Bool
+
+    /// `expandAll` opens both disclosures (offscreen renders show every row).
+    init(display: NotchDisplay, expandAll: Bool = false) {
+        self.display = display
+        _showAll = State(initialValue: expandAll)
+        _showDiagnostics = State(initialValue: expandAll)
+    }
 
     var body: some View {
-        let sorted = SeriesScale.window(points)
-        VStack(spacing: 3) {
-            if let last = sorted.last, sorted.count >= 2 {
-                let step = SeriesScale.niceStep(for: sorted.map(\.value).max() ?? 0)
-                let scale = SeriesScale(end: last.at, span: NotchSnapshot.rateWindow, top: step * 3)
-                HStack(spacing: 6) {
-                    VStack(alignment: .trailing, spacing: 0) {
-                        ForEach((0...3).reversed(), id: \.self) { i in
-                            Text(axis(step * Double(i)))
-                                .font(.system(size: 9).monospacedDigit())
-                                .foregroundStyle(NotchStyle.tertiary)
-                                .frame(maxHeight: .infinity, alignment: i == 3 ? .top : i == 0 ? .bottom : .center)
-                        }
-                    }
-                    .frame(width: gutter - 6)
-                    GeometryReader { g in
-                        ZStack {
-                            ForEach(0...3, id: \.self) { i in
-                                Path { p in
-                                    let y = g.size.height * CGFloat(i) / 3
-                                    p.move(to: CGPoint(x: 0, y: y))
-                                    p.addLine(to: CGPoint(x: g.size.width, y: y))
-                                }
-                                .stroke(NotchStyle.hairline, lineWidth: 1)
-                            }
-                            scale.area(sorted, in: g.size)
-                                .fill(LinearGradient(colors: [NotchStyle.mint.opacity(0.22), NotchStyle.mint.opacity(0.02)],
-                                                     startPoint: .top, endPoint: .bottom))
-                            scale.line(sorted, in: g.size)
-                                .stroke(NotchStyle.mint, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                        }
+        let a = display.snapshot.activity
+        let p = TodayPresentation(a)
+        let dim = NotchDisplay.opacity(display.activityFreshness)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(p.headline).font(NotchStyle.number(28)).foregroundStyle(a.jobsToday.value == nil ? NotchStyle.tertiary : NotchStyle.primary)
+                Text(p.headlineUnit).font(.system(size: 13, weight: .medium)).foregroundStyle(NotchStyle.secondary).lineLimit(2)
+            }
+            .opacity(dim)
+            .accessibilityElement(children: .combine)
+
+            if !p.breakdown.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(p.breakdown.enumerated()), id: \.element.id) { i, line in
+                        if i > 0 { Hairline() }
+                        TodayLine(line: line)
                     }
                 }
-            } else {
+                .opacity(dim)
+            }
+
+            ActivityChart(series: a.series, axis: p.axis, since: a.dayStart, until: a.until,
+                          emptyReason: a.jobsToday.reason ?? "No coverage today yet")
+                .frame(height: 56)
+                .opacity(dim)
+
+            if let footer = p.footer {
+                Text(footer).font(.system(size: 10)).foregroundStyle(a.partial ? NotchStyle.secondary : NotchStyle.tertiary)
+                    .lineLimit(2)
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                Hairline()
+                DisclosureRow(title: "Show all capabilities", isOn: $showAll)
+                if showAll {
+                    ForEach(p.all) { line in
+                        TodayLine(line: line, quiet: !a.rows.contains { $0.id == line.id && $0.succeeded > 0 })
+                    }
+                    .opacity(dim)
+                }
+                Hairline()
+                DisclosureRow(title: "Diagnostics", isOn: $showDiagnostics)
+                if showDiagnostics { DiagnosticsView(display: display).padding(.bottom, 4) }
+            }
+        }
+    }
+}
+
+/// A title on the left; a muted detail and the value on the right, on one line.
+struct TodayLine: View {
+    let line: TodayPresentation.Line
+    var quiet = false
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(line.title).font(.system(size: 12)).foregroundStyle(quiet ? NotchStyle.secondary : NotchStyle.primary)
+            Spacer(minLength: 8)
+            if let detail = line.detail {
+                Text(detail).font(.system(size: 11).monospacedDigit()).foregroundStyle(quiet ? NotchStyle.tertiary : NotchStyle.secondary).lineLimit(1)
+            }
+            Text(line.value)
+                .font(quiet ? .system(size: 11) : NotchStyle.number(12))
+                .foregroundStyle(quiet ? NotchStyle.tertiary : NotchStyle.primary)
+                .lineLimit(1)
+        }
+        .padding(.vertical, 5)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(line.title)
+        .accessibilityValue([line.value, line.detail].compactMap { $0 }.joined(separator: ", "))
+    }
+}
+
+struct DisclosureRow: View {
+    let title: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isOn ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
+                    .frame(width: 10)
+                Text(title).font(.system(size: 12))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(NotchStyle.secondary)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(isOn ? "expanded" : "collapsed")
+    }
+}
+
+struct DiagnosticsView: View {
+    let display: NotchDisplay
+
+    var body: some View {
+        let d = DiagnosticsPresentation(display.snapshot)
+        VStack(alignment: .leading, spacing: 10) {
+            section("Chat tokens today", d.chatTokens, empty: "No chat jobs today")
+                .opacity(NotchDisplay.opacity(display.activityFreshness))
+            section("Failed and cancelled", d.failures, empty: "None today")
+                .opacity(NotchDisplay.opacity(display.activityFreshness))
+            section("Coverage", d.coverage, empty: "No activity report yet")
+            VStack(alignment: .leading, spacing: 0) {
+                SectionLabel(text: "Token sources").padding(.bottom, 2)
+                if d.sources.isEmpty {
+                    Text("No token source reports usage yet").font(.system(size: 11)).foregroundStyle(NotchStyle.secondary)
+                }
+                ForEach(d.sources) { src in
+                    Hairline()
+                    SourceRow(source: src)
+                        .opacity(NotchDisplay.opacity(display.freshness(ofSource: src.id)))
+                }
+                ForEach(d.omlxModels) { m in
+                    Text(([m.model, m.state] + [m.detail].compactMap { $0 }).joined(separator: " · "))
+                        .font(.system(size: 10).monospacedDigit()).foregroundStyle(NotchStyle.tertiary).lineLimit(1)
+                        .padding(.leading, 8)
+                }
+                .opacity(NotchDisplay.opacity(display.omlxFreshness))
+                if let pressure = d.omlxPressure {
+                    Text("oMLX memory pressure: \(pressure)").font(.system(size: 10)).foregroundStyle(NotchStyle.tertiary)
+                        .padding(.leading, 8).opacity(NotchDisplay.opacity(display.omlxFreshness))
+                }
+                if let note = display.snapshot.usageNote {
+                    Text(note).font(.system(size: 10)).foregroundStyle(NotchStyle.tertiary).lineLimit(2).padding(.top, 2)
+                }
+            }
+        }
+        .padding(.leading, 16)
+    }
+
+    private func section(_ title: String, _ lines: [String], empty: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            SectionLabel(text: title).padding(.bottom, 1)
+            ForEach(lines.isEmpty ? [empty] : lines, id: \.self) { line in
+                Text(line).font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(lines.isEmpty ? NotchStyle.tertiary : NotchStyle.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Completed jobs per 15-minute bucket from local midnight to now, in the single accent colour.
+/// A bucket no node covered draws nothing (unknown); a covered bucket with no jobs draws a faint
+/// baseline.
+struct ActivityChart: View {
+    let series: [ActivityBucket]
+    let axis: [TodayPresentation.AxisMark]
+    let since: Date?
+    let until: Date?
+    let emptyReason: String
+
+    var body: some View {
+        let covered = series.compactMap(\.jobs)
+        VStack(spacing: 3) {
+            if covered.isEmpty || since == nil || until == nil {
                 Text(emptyReason)
                     .font(.system(size: 11))
                     .foregroundStyle(NotchStyle.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            if sorted.count >= 2 {
-                HStack {
-                    Text("60s ago")
-                    Spacer()
-                    Text("now")
+            } else if let since, let until {
+                let peak = max(covered.max() ?? 0, 1)
+                let span = max(until.timeIntervalSince(since), 1)
+                Text("\(NotchFormat.count(peak)) per 15 min")
+                    .font(.system(size: 9).monospacedDigit()).foregroundStyle(NotchStyle.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .frame(height: 11)
+                GeometryReader { g in
+                    let w = g.size.width * CGFloat(Double(LocalDay.bucketMs) / 1_000 / span)
+                    let x = { (b: ActivityBucket) in g.size.width * CGFloat(b.start.timeIntervalSince(since) / span) }
+                    ZStack(alignment: .topTrailing) {
+                        Path { p in
+                            p.move(to: CGPoint(x: 0, y: g.size.height))
+                            p.addLine(to: CGPoint(x: g.size.width, y: g.size.height))
+                        }
+                        .stroke(NotchStyle.hairline, lineWidth: 1)
+                        Path { p in
+                            for b in series where b.jobs == 0 {
+                                p.addRect(CGRect(x: x(b), y: g.size.height - 1, width: w, height: 1))
+                            }
+                        }
+                        .fill(NotchStyle.mint.opacity(0.3))
+                        Path { p in
+                            for b in series {
+                                guard let jobs = b.jobs, jobs > 0 else { continue }
+                                let h = max(g.size.height * CGFloat(jobs) / CGFloat(peak), 1)
+                                p.addRect(CGRect(x: x(b) + w * 0.15, y: g.size.height - h, width: max(w * 0.7, 1), height: h))
+                            }
+                        }
+                        .fill(NotchStyle.mint)
+                    }
                 }
-                .font(.system(size: 9))
-                .foregroundStyle(NotchStyle.tertiary)
-                .padding(.leading, gutter)
+                GeometryReader { g in
+                    ForEach(Array(axis.enumerated()), id: \.offset) { _, mark in
+                        Text(mark.label)
+                            .font(.system(size: 9).monospacedDigit())
+                            .foregroundStyle(NotchStyle.tertiary)
+                            .fixedSize()
+                            .frame(width: 60, alignment: mark.at == 0 ? .leading : mark.at == 1 ? .trailing : .center)
+                            .position(x: min(max(g.size.width * CGFloat(mark.at), 30), g.size.width - 30), y: g.size.height / 2)
+                    }
+                }
+                .frame(height: 11)
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Completed output rate, last 60 seconds")
-        .accessibilityValue(summary(sorted))
+        .accessibilityLabel("Completed jobs per 15 minutes today")
+        .accessibilityValue(summary)
     }
 
-    private func axis(_ v: Double) -> String {
-        v >= 1_000 ? NotchFormat.tokens(Int64(v)) : (v == v.rounded() ? String(format: "%.0f", v) : String(format: "%.1f", v))
-    }
-
-    private func summary(_ sorted: [TimePoint]) -> String {
-        guard sorted.count >= 2, let last = sorted.last else { return emptyReason }
-        let values = sorted.map(\.value)
-        return "Latest \(NotchFormat.rate(last.value)) tokens per second, range \(NotchFormat.rate(values.min() ?? 0)) to \(NotchFormat.rate(values.max() ?? 0))"
-    }
-}
-
-// MARK: - Tabs
-
-struct ProductionTab: View {
-    let display: NotchDisplay
-    private var s: NotchSnapshot { display.snapshot }
-
-    var body: some View {
-        let headline = NotchDisplay.opacity(display.freshness)
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 14) {
-                rate.opacity(headline)
-                Spacer(minLength: 8)
-                Group {
-                    ColumnDivider()
-                    MetricColumn(value: s.activeRequests.value.map(String.init), label: "Active", reason: s.activeRequests.reason)
-                    ColumnDivider()
-                    MetricColumn(value: s.apps.value.map(String.init), label: "Apps (labelled)", reason: s.apps.reason,
-                                 help: appsHelp(s))
-                }
-                .opacity(NotchDisplay.opacity(display.engineFreshness))
-            }
-
-            RateChart(points: s.rateHistory, emptyReason: s.outputRate.reason ?? "No output history yet")
-                .frame(height: 84)
-                .opacity(headline)
-
-            HStack(alignment: .top, spacing: 16) {
-                totals.opacity(headline).frame(maxWidth: .infinity)
-                if !s.sources.isEmpty {
-                    Rectangle().fill(NotchStyle.hairline).frame(width: 1)
-                    sources.frame(maxWidth: .infinity)
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-
-            if let note = s.usageNote {
-                Text(note).font(.system(size: 10)).foregroundStyle(NotchStyle.tertiary).lineLimit(1).help(note)
-            }
-        }
-    }
-
-    private var caption: String {
-        s.productionSource.isEmpty ? "Completed output, last 60 s" : "Completed output, last 60 s · \(s.productionSource)"
-    }
-
-    private var rate: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            if let rate = s.outputRate.value {
-                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Text(NotchFormat.rate(rate)).font(NotchStyle.number(40)).foregroundStyle(NotchStyle.primary)
-                    Text("tok/s").font(.system(size: 16, weight: .medium)).foregroundStyle(NotchStyle.secondary)
-                }
-            } else {
-                Text("—").font(NotchStyle.number(40)).foregroundStyle(NotchStyle.tertiary)
-            }
-            Text(caption).font(.system(size: 11)).foregroundStyle(NotchStyle.secondary).lineLimit(1)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(caption)
-        .accessibilityValue(s.outputRate.value.map { "\(NotchFormat.rate($0)) tokens per second" }
-            ?? s.outputRate.reason ?? "unavailable")
-    }
-
-    private var totals: some View {
-        VStack(spacing: 0) {
-            NotchRow(label: "Produced today",
-                     details: [s.productionSource.isEmpty ? nil : s.productionSource, inputDetail].compactMap { $0 }) {
-                VStack(alignment: .trailing, spacing: 1) {
-                    if let out = s.outputToday.value {
-                        Text("\(NotchFormat.tokens(out)) tokens").font(NotchStyle.number(13)).foregroundStyle(NotchStyle.primary)
-                        if let coverage { Text(coverage).font(.system(size: 10).monospacedDigit()).foregroundStyle(NotchStyle.tertiary) }
-                    } else {
-                        Text(s.outputToday.reason ?? "").font(.system(size: 11)).foregroundStyle(NotchStyle.secondary)
-                            .lineLimit(1)
-                    }
-                }
-            }
-            Hairline()
-            NotchRow(label: "By midnight") {
-                VStack(alignment: .trailing, spacing: 1) {
-                    if let e = s.estimate.value {
-                        Text("\(NotchFormat.range(e)) est.").font(NotchStyle.number(13)).foregroundStyle(NotchStyle.primary)
-                        Text("Based on today's pace").font(.system(size: 10)).foregroundStyle(NotchStyle.tertiary)
-                    } else {
-                        Text(s.estimate.reason ?? "").font(.system(size: 11)).foregroundStyle(NotchStyle.secondary)
-                            .lineLimit(1)
-                    }
-                }
-            }
-        }
-    }
-
-    /// Each source on its own row with its own freshness; never summed (a request can be in both).
-    private var sources: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SectionLabel(text: "Sources").padding(.bottom, 2)
-            ForEach(s.sources) { src in
-                Hairline()
-                SourceRow(source: src)
-                    .opacity(NotchDisplay.opacity(display.freshness(ofSource: src.id)))
-            }
-        }
-    }
-
-    private var coverage: String? {
-        guard let start = s.coverageStart else { return nil }
-        let gaps = s.coverageGaps > 0 ? " · \(plural(s.coverageGaps, "gap"))" : ""
-        return "since \(NotchFormat.time(start))\(gaps)"
-    }
-
-    private var inputDetail: String? {
-        let parts = [s.promptToday.value.map { "prompt \(NotchFormat.tokens($0))" },
-                     s.cachedToday.value.map { "cached \(NotchFormat.tokens($0))" }].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    private var summary: String {
+        guard let peak = series.filter({ $0.jobs != nil }).max(by: { ($0.jobs ?? 0) < ($1.jobs ?? 0) }),
+              let jobs = peak.jobs else { return emptyReason }
+        let gaps = series.filter { $0.jobs == nil }.count
+        return "Peak \(plural(Int(clamping: jobs), "job")) at \(NotchFormat.time(peak.start))"
+            + (gaps > 0 ? ", \(plural(gaps, "interval")) without coverage" : "")
     }
 }
 
@@ -884,12 +964,13 @@ struct SourceRow: View {
 
     private var secondary: String {
         [source.today.value.map { "\(NotchFormat.tokens($0)) today" } ?? source.today.reason,
+         source.estimate.value.map { "by midnight \(NotchFormat.range($0)) est. at today's pace" },
          source.prompt.value.map { "prompt \(NotchFormat.tokens($0))" },
          source.cached.value.map { "cached \(NotchFormat.tokens($0))" }].compactMap { $0 }.joined(separator: " · ")
     }
 }
 
-struct DemandTab: View {
+struct NowTab: View {
     let display: NotchDisplay
     private var s: NotchSnapshot { display.snapshot }
 

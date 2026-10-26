@@ -8,6 +8,7 @@ fallbacks, the temperature clamp, sticky conversations, the closed aggregate ref
 """
 import base64
 import concurrent.futures
+import http.client
 import json
 import os
 import signal
@@ -25,6 +26,8 @@ API, ADMIN = 'smoke-api-key-0123456789', 'smoke-admin-key-0123456789'
 REGISTRY = {m['id']: m for m in json.loads((ROOT / 'configs/registry.json').read_text())['models']}
 B8, B3, VISION = 'granite-4.2-8b', 'granite-4.2-3b', 'granite-vision-4.1-4b'
 SPEECH = 'granite-speech-5.0-470m-turboctc'
+SWITCH, EMBED, TTM = 'granite-switch-4.1-8b', 'granite-embedding-97m-multilingual-r2', 'granite-timeseries-ttm-r3'
+STUB_FAMILY = {'speech': 'speech', 'speech_synthesis': 'speech_synthesis', 'embedding': 'embedding', 'time_series': 'timeseries'}
 PNG = 'data:image/png;base64,' + base64.b64encode(b'\x89PNG\r\n\x1a\n' + bytes(64)).decode()
 def wav(seconds=0.5, rate=16000):
     import io, wave
@@ -53,20 +56,20 @@ def free_port():
 
 
 class Router:
-    def __init__(self, device, hold=False, extra=(), models=None, peers=(), host='auto-smoke', auto=None):
+    def __init__(self, device, hold=False, extra=(), models=None, peers=(), host='auto-smoke', auto=None, backend=None):
         self.state = tempfile.TemporaryDirectory()
         self.port = free_port()
         deployments = []
         for model in (models or (B8, B3)) + tuple(extra):
             port = free_port()
-            family = 'speech' if model == SPEECH else 'speech_synthesis' if model.startswith('qwen3-tts') else 'language'
+            family = STUB_FAMILY.get(REGISTRY[model]['family'], 'language')
             deployments.append(dict(
-                model=model, backend=family + '_native', base_url=f'http://127.0.0.1:{port}',
+                model=model, backend=backend or family + '_native', base_url=f'http://127.0.0.1:{port}',
                 revision=REGISTRY[model]['hf_revision'], artifact_repo='stub',
                 command=['python3', 'workers/stub.py', '--family', family, '--model', model,
-                         '--revision', REGISTRY[model]['hf_revision'], '--port', str(port)],
+                         '--revision', REGISTRY[model]['hf_revision'], '--port', str(port)] + (['--backend', backend] if backend else []),
                 memory_bytes=64 << 20, context_tokens=4096, device=device, health_path='/healthz', identity_path='/internal/metadata',
-                runtime_manifest='workers/stub.py', backend_build='stub', max_concurrency=1, load_timeout_seconds=60,
+                runtime_manifest='workers/stub.py', backend_build='vllm-vstub' if backend == 'vllm' else 'stub', max_concurrency=1, load_timeout_seconds=60,
                 **({'hold_reason': 'held for the test'} if hold else {})))
         config = dict(listen=f'127.0.0.1:{self.port}', host_id=host, registry='configs/registry.json',
                       state_dir=self.state.name, api_key_env='GRANITE_API_KEY', admin_key_env='GRANITE_ADMIN_KEY',
@@ -556,6 +559,138 @@ def main():
               and hosts['hosts'][0]['usage']['models'][B8]['requests_completed'] == 1)
     finally:
         b.close()
+
+    # Activity: one job per execution on the node that ran it, with the units its reply carried.
+    def post(r, path, body, key=API, raw_reply=False):
+        req = urllib.request.Request(f'http://127.0.0.1:{r.port}{path}', json.dumps(body).encode(),
+                                     {'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+        try:
+            with urllib.request.urlopen(req, timeout=180) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+        except http.client.IncompleteRead:
+            return -1, b''
+
+    def activity(r, query='', key=ADMIN):
+        req = urllib.request.Request(f'http://127.0.0.1:{r.port}/internal/activity{query}', headers={'Authorization': 'Bearer ' + key})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as e:
+            return e.code, None
+
+    def jobs(r):
+        # Summed over buckets, so a run that crosses a 15-minute boundary still adds up.
+        total = {}
+        for bucket in activity(r)[1]['hosts'][0]['buckets']:
+            t = total.setdefault((bucket['model'], bucket['capability']), dict(succeeded=0, failed=0, cancelled=0, units={}, units_unavailable=0))
+            for k in ('succeeded', 'failed', 'cancelled', 'units_unavailable'):
+                t[k] += bucket[k]
+            for k, v in bucket['units'].items():
+                t['units'][k] = t['units'].get(k, 0) + v
+        return total
+
+    say = lambda text, **body: dict(model=B3, messages=[dict(role='user', content=text)], reasoning_effort='off', temperature=0, **body)
+    r = Router('cpu', models=(B3, SWITCH, SPEECH, 'qwen3-tts-0.6b-base', EMBED, TTM),
+               auto=dict(enabled=True, audio=True, prefer=dict(chat=[B3], transcription=[SPEECH])))
+    try:
+        ok = [post(r, '/v1/chat/completions', say('hi'))[0],
+              post(r, '/v1/systemone', dict(model=SWITCH, state={}, questions={
+                  'tone': dict(instructions='pick', type='choice', criteria=dict(a='first', b='second')),
+                  'risk': dict(instructions='rate', type='score', criteria=['low', 'high'])}))[0],
+              r.transcribe(SPEECH)[0],
+              post(r, '/v1/audio/speech', dict(model='qwen3-tts-0.6b-base', input='hello', response_format='wav'))[0],
+              post(r, '/v1/embeddings', dict(model=EMBED, input=['a', 'b']))[0],
+              post(r, '/v1/retrieval/rank', dict(model=EMBED, query='q', documents=[dict(id=i, text=i) for i in 'xyz']))[0],
+              post(r, '/v1/forecast', dict(model=TTM, history=[1.0, 2.0, 3.0, 4.0], horizon=4))[0],
+              r.chat(content=[dict(type='text', text='say'), audio()])[0]]
+        bad = [post(r, '/v1/chat/completions', say('FAIL'))[0],
+               post(r, '/v1/chat/completions', say('BREAK', stream=True))[0],
+               post(r, '/v1/chat/completions', say('BIGJSON'))[0]]
+        stream_error = post(r, '/v1/chat/completions', say('SSEERROR', stream=True))[0]
+        # A client that leaves after the first event: the engine is still pausing, so the job is cancelled.
+        conn = http.client.HTTPConnection('127.0.0.1', r.port, timeout=30)
+        conn.request('POST', '/v1/chat/completions', json.dumps(say('DRIP', stream=True)),
+                     {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json'})
+        conn.getresponse().read1(64)
+        conn.close()
+        deadline = time.time() + 15
+        while time.time() < deadline and jobs(r).get((B3, 'chat'), {}).get('cancelled', 0) < 1:
+            time.sleep(0.25)
+        # Disconnect while the worker is still computing and has not sent headers.
+        conn = http.client.HTTPConnection('127.0.0.1', r.port, timeout=30)
+        conn.request('POST', '/v1/chat/completions', json.dumps(say('SLOW')),
+                     {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json'})
+        time.sleep(0.5)
+        conn.close()
+        deadline = time.time() + 15
+        while time.time() < deadline and jobs(r).get((B3, 'chat'), {}).get('cancelled', 0) < 2:
+            time.sleep(0.25)
+        j = jobs(r)
+        check('every capability that ran is a succeeded job with its native units',
+              ok == [200] * 8
+              and j[(SWITCH, 'adapters')] == dict(succeeded=1, failed=0, cancelled=0, units_unavailable=0,
+                                                 units=dict(questions_answered=2, input_tokens=20))
+              and j[(SPEECH, 'transcription')]['units'] == dict(audio_seconds=1.0) and j[(SPEECH, 'transcription')]['succeeded'] == 2
+              and j[('qwen3-tts-0.6b-base', 'speech_synthesis')]['units'] == dict(audio_seconds=0.75)
+              and j[(EMBED, 'embeddings')]['units'] == dict(vectors=2, prompt_tokens=2)
+              and j[(EMBED, 'retrieval')]['units'] == dict(documents_ranked=3)
+              and j[(TTM, 'forecast')]['units'] == dict(forecast_steps=4))
+        check('auto with audio counts one transcription job and one chat job on the node that ran them',
+              j[(B3, 'chat')]['succeeded'] == 3 and j[(B3, 'chat')]['units'] == dict(prompt_tokens=2, output_tokens=2))
+        check('a backend error and a stream broken midway are failed; a client that left is cancelled',
+              bad[0] == 500 and bad[1] in (200, -1) and stream_error == 200 and j[(B3, 'chat')]['failed'] == 3 and j[(B3, 'chat')]['cancelled'] == 2)
+        check('a reply past the read cap is a succeeded job with its units unavailable',
+              bad[2] == 200 and j[(B3, 'chat')]['units_unavailable'] == 1)
+        status, report = activity(r)
+        host = report['hosts'][0] if status == 200 else {}
+        check('/internal/activity names its bucket size, retention and this process\'s coverage',
+              report['bucket_seconds'] == 900 and report['retention_days'] == 35 and host.get('host') == 'auto-smoke'
+              and len(host['coverage']) == 1 and host['truncated'] is False
+              and all(b['start_unix_ms'] % 900000 == 0 for b in host['buckets']))
+        now = int(time.time() * 1000)
+        check('/internal/activity is admin-only and bounds its window to 35 days',
+              activity(r, key=API)[0] == 401
+              and activity(r, f'?since_unix_ms={now - 36 * 86400000}&until_unix_ms={now}')[0] == 400
+              and activity(r, f'?since_unix_ms={now}&until_unix_ms={now - 1}')[0] == 400
+              and activity(r, '?since_unix_ms=yesterday')[0] == 400)
+        _, metrics = get(r, '/internal/metrics')
+        check('systemone input_tokens count as prompt tokens, and the request is not one without usage',
+              metrics['usage']['models'][SWITCH] == dict(requests_completed=1, requests_without_usage=0, prompt_tokens=20,
+                                                       cached_prompt_tokens=0, output_tokens=0))
+        # A graceful stop drains requests in flight: this one finishes, counts, and is written before exit.
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            draining = pool.submit(post, r, '/v1/chat/completions', say('DRIP', stream=True))
+            time.sleep(0.5)
+            r.process.terminate()
+            status, _ = draining.result(timeout=30)
+        r.process.wait(timeout=30)
+        stored = json.loads((Path(r.state.name) / 'activity.json').read_text())
+        chats = [b for b in stored['buckets'] if b['model'] == B3 and b['capability'] == 'chat']
+        check('a request in flight at a graceful stop finishes and its outcome is written before exit',
+              status == 200 and sum(b['succeeded'] for b in chats) == 4 and sum(b['cancelled'] for b in chats) == 2)
+    finally:
+        r.close()
+
+    # Vision normalization buffers the backend JSON before sending client headers.
+    r = Router('cpu', models=(VISION,), backend='vllm')
+    try:
+        body = dict(model=VISION, prompt='BUFFER', mime_type='image/png', image_base64=PNG.split(',')[1])
+        warm = post(r, '/v1/vision/extract', dict(body, prompt='hi'))[0]
+        conn = http.client.HTTPConnection('127.0.0.1', r.port, timeout=30)
+        conn.request('POST', '/v1/vision/extract', json.dumps(body),
+                     {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json'})
+        time.sleep(1)
+        conn.close()
+        deadline = time.time() + 10
+        while time.time() < deadline and jobs(r).get((VISION, 'vision'), {}).get('cancelled', 0) < 1:
+            time.sleep(0.25)
+        j = jobs(r).get((VISION, 'vision'), {})
+        check('disconnect while a vision response body is buffered records cancellation once',
+              warm == 200 and j.get('cancelled') == 1 and j.get('succeeded') == 1 and j.get('failed') == 0)
+    finally:
+        r.close()
 
     # Both held: nothing may load.
     r = Router('unified', hold=True)

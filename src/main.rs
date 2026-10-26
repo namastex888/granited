@@ -1,3 +1,4 @@
+mod activity;
 mod api;
 mod config;
 mod contracts;
@@ -47,6 +48,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         tracing::warn!("{line}");
     }
+    // Counts of the jobs this node ran, kept 35 days; never under `owned`, the reaping ledger.
+    let ledger = Arc::new(activity::Activity::open(&config.state_dir));
     let workers = lifecycle::new_workers(config.deployments.clone());
     let initial = tokio::task::spawn_blocking(hardware::collect).await?;
     let service = Arc::new(lifecycle::Service {
@@ -72,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )),
         usage: Default::default(),
         clients: Default::default(),
+        activity: ledger.clone(),
         started: Instant::now(),
     });
     for peer in &config.peers {
@@ -105,6 +109,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             evict.evict_idle().await;
         }
     });
+    // Every 30 s, and only when something changed. Not aborted at shutdown: an aborted flush could
+    // leave its write running while the final one starts; the flush lock orders them instead.
+    let flushing = ledger.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(activity::FLUSH_SECONDS)).await;
+            if let Err(e) = flushing.flush(false).await {
+                tracing::warn!(error = %e, "activity flush failed");
+            }
+        }
+    });
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
     tracing::info!(
         listen = config.listen,
@@ -129,6 +144,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     eviction.abort();
     refresher.abort();
+    // Requests have drained. The second call writes only if a job landed after the first snapshot.
+    for force in [true, false] {
+        if let Err(e) = ledger.flush(force).await {
+            tracing::warn!(error = %e, "final activity flush failed");
+        }
+    }
     service.shutdown().await;
     drop(lock);
     Ok(())

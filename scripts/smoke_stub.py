@@ -108,6 +108,13 @@ def main():
         finally:
             router.terminate()
             router.wait(timeout=20)
+        # A graceful stop writes the ledger once more: counts only, readable by its owner alone.
+        ledger = Path(state) / 'activity.json'
+        stored = json.loads(ledger.read_text()) if ledger.exists() else {}
+        checks.append(('the activity ledger is flushed at shutdown with mode 0600', ledger.exists()
+                       and ledger.stat().st_mode & 0o777 == 0o600
+                       and sum(b['succeeded'] for b in stored.get('buckets', [])) == 2 + 35
+                       and len(stored.get('coverage', [])) == 1))
     for name, ok in checks:
         print(('PASS ' if ok else 'FAIL ') + name)
     sys.exit(0 if all(ok for _, ok in checks) else 1)

@@ -252,6 +252,8 @@ pub struct Service {
     pub usage: UsageLog,
     /// Requests that entered the fleet here, by their self-declared `x-localfleet-client`.
     pub clients: Mutex<Clients>,
+    /// Jobs this node ran, per 15-minute bucket (`/internal/activity`).
+    pub activity: Arc<crate::activity::Activity>,
 }
 
 /// Counts only, by a label any caller may claim: never used for routing, admission or auth.
@@ -363,16 +365,25 @@ impl Service {
     /// as a request with no tokens.
     pub fn count_usage(&self, model: &str, usage: Option<&Value>) {
         let tokens = |v: Option<&Value>| v.and_then(Value::as_u64).unwrap_or(0);
-        let reported =
-            usage.filter(|u| u["prompt_tokens"].is_u64() || u["completion_tokens"].is_u64());
+        let reported = usage.filter(|u| {
+            u["prompt_tokens"].is_u64()
+                || u["completion_tokens"].is_u64()
+                || u["input_tokens"].is_u64()
+        });
         let mut all = self.usage.models.lock().unwrap();
         let c = all.entry(model.to_owned()).or_default();
         c.requests_completed = c.requests_completed.saturating_add(1);
         match reported {
             Some(u) => {
-                c.prompt_tokens = c
-                    .prompt_tokens
-                    .saturating_add(tokens(u.get("prompt_tokens")));
+                // `/v1/systemone` reports its prompt as `input_tokens` and no output. It counts as
+                // prompt only in a reply without the chat shape, so nothing is counted twice.
+                let chat_shape = !u["prompt_tokens"].is_null() || !u["completion_tokens"].is_null();
+                let prompt = if chat_shape {
+                    u.get("prompt_tokens")
+                } else {
+                    u.get("input_tokens")
+                };
+                c.prompt_tokens = c.prompt_tokens.saturating_add(tokens(prompt));
                 c.cached_prompt_tokens = c
                     .cached_prompt_tokens
                     .saturating_add(tokens(u.pointer("/prompt_tokens_details/cached_tokens")));

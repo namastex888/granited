@@ -471,6 +471,8 @@ struct NotchSnapshot: Sendable, Equatable {
     var sources: [ProductionSource] = []
     var models: [ModelLine] = []
     var omlxPressure: String?
+    /// Completed jobs today from /internal/activity (set by the collector after `derive`).
+    var activity = ActivitySummary()
 
     /// Unique hosts in reply order (first entry wins), so a repeated host is never counted twice.
     static func uniqueHosts(_ reply: NotchHostsReply) -> [NotchHostsReply.Host] {
@@ -776,12 +778,16 @@ struct EngineAccess: Sendable, Equatable {
     var label: String
     var baseURL: String
     var adminKey: String?
+    /// Registry capabilities per model id (GET /admin/models); empty until it loads. Only maps a
+    /// model a node reports as deployed to its capabilities.
+    var modelCapabilities: [String: [String]] = [:]
 }
 
-/// Polls while the notch is shown. Two independent loops, so a slow or missing source never
-/// delays the other:
-/// - the engine: /internal/metrics every 2 s (this node) and /internal/hosts every 5 s (one entry
-///   per node, with usage and power);
+/// Polls while the notch is shown. Independent loops, so a slow or missing source never delays
+/// another:
+/// - the engine: /internal/metrics every 2 s (this node), /internal/hosts every 5 s (one entry
+///   per node, with usage and power) and /internal/activity every 30 s (today's completed jobs
+///   per node, from local midnight to now);
 /// - a local oMLX server, when one is configured on loopback: /api/status and
 ///   /admin/api/activity every 2 s, with a short timeout.
 /// Each source keeps the time its last response arrived; counters are recorded at that time.
@@ -798,10 +804,15 @@ final class NotchTelemetry: ObservableObject {
     @Published private(set) var omlxFreshness: Freshness = .offline("No local oMLX server")
     /// Fleet active requests at each metrics poll in the last minute (actual counts).
     @Published private(set) var activeHistory: [TimePoint] = []
+    /// Freshness of the activity report behind the job counts.
+    @Published private(set) var activityFreshness: Freshness = .offline("Not started")
 
     var metricsInterval: Duration = .seconds(2)
     var hostsInterval: Duration = .seconds(5)
     var omlxInterval: Duration = .seconds(2)
+    var activityInterval: Duration = .seconds(30)
+    /// Three missed activity polls.
+    var activityStaleAfter: TimeInterval = 90
     var engineTimeout: TimeInterval = 4
     var hostsTimeout: TimeInterval = 8
     var omlxTimeout: TimeInterval = 1.5
@@ -826,6 +837,15 @@ final class NotchTelemetry: ObservableObject {
     private var metricsAt: Date?
     private var omlxAt: Date?
     private var engineOffline: String? = "Not started"
+    private var access: EngineAccess?
+    private var activityReply: ActivityReply?
+    private var activityDay: LocalDay?
+    private var activityAt: Date?
+    private var activityError: String?
+    /// Fleet jobs at the previous activity poll today, and when that poll ran.
+    private var lastJobs: (jobs: Int64, at: Date)?
+    /// A job finished after this time (the poll before the total rose).
+    private var jobFinishedAfter: Date?
 
     init(fetcher: any NotchFetching = URLSessionFetcher(), defaults: UserDefaults = .standard,
          calendar: Calendar = .autoupdatingCurrent,
@@ -843,8 +863,12 @@ final class NotchTelemetry: ObservableObject {
 
     func start(state: AppState) {
         start { [weak state] in
-            state.map { EngineAccess(running: $0.engine.isRunning, label: $0.engine.label,
-                                     baseURL: $0.client.baseURL, adminKey: $0.client.adminKey) }
+            state.map { s in
+                EngineAccess(running: s.engine.isRunning, label: s.engine.label,
+                             baseURL: s.client.baseURL, adminKey: s.client.adminKey,
+                             modelCapabilities: Dictionary(s.registry.map { ($0.id, $0.capabilities ?? []) },
+                                                           uniquingKeysWith: { a, _ in a }))
+            }
         }
     }
 
@@ -857,6 +881,7 @@ final class NotchTelemetry: ObservableObject {
             Task { [weak self] in await self?.metricsLoop(gen) },
             Task { [weak self] in await self?.hostsLoop(gen) },
             Task { [weak self] in await self?.omlxLoop(gen) },
+            Task { [weak self] in await self?.activityLoop(gen) },
         ]
     }
 
@@ -896,10 +921,12 @@ final class NotchTelemetry: ObservableObject {
         guard let access = engine?(), access.running else {
             engineOffline = engine?()?.label ?? "Engine not configured"
             hostsReply = nil; metricsReply = nil; hostsAt = nil; metricsAt = nil
+            activityReply = nil; activityAt = nil; activityError = nil
             if current(gen) { publish() }
             return nil
         }
         engineOffline = nil
+        self.access = access
         return access
     }
 
@@ -954,6 +981,63 @@ final class NotchTelemetry: ObservableObject {
         }
         Self.save(usage, "notch.usageLedger", defaults)
         Self.save(energy, "notch.energyLedger", defaults)
+    }
+
+    // MARK: Activity
+
+    private func activityLoop(_ gen: Int) async {
+        while current(gen) {
+            await pollActivity(gen)
+            try? await Task.sleep(for: activityInterval)
+        }
+    }
+
+    /// Today's jobs: [local midnight, now) of the injected calendar. An engine without the
+    /// endpoint (HTTP 404 or an unreadable reply) is "update pending"; a transport failure keeps
+    /// the last reply until it is stale.
+    func pollActivity(_ gen: Int? = nil) async {
+        let gen = gen ?? generation
+        guard let access = runningEngine(gen) else { return }
+        let day = LocalDay(now: Date(), calendar: calendar)
+        let result: Result<ActivityReply, Error>
+        do {
+            result = .success(try await fetcher.get(access.baseURL, day.query, key: access.adminKey,
+                                                    timeout: hostsTimeout, as: ActivityReply.self))
+        } catch {
+            result = .failure(error)
+        }
+        guard current(gen) else { return }
+        let now = Date()
+        switch result {
+        case .success(let reply):
+            // A reply for another day (asked for before midnight) is dropped.
+            guard reply.since_unix_ms.map({ $0 == day.sinceMs }) ?? true,
+                  calendar.isDate(day.since, inSameDayAs: now) else { break }
+            let jobs = ActivitySummary.derive(reply, day: day, installed: nil).jobsToday.value ?? 0
+            if let last = lastJobs, calendar.isDate(last.at, inSameDayAs: now), jobs > last.jobs {
+                jobFinishedAfter = last.at
+            }
+            lastJobs = (jobs, now)
+            activityReply = reply; activityDay = day; activityAt = now; activityError = nil
+        case .failure(ClientError.http(let code, _)):
+            activityReply = nil; activityAt = now
+            activityError = code == 404 ? ActivitySummary.pending : "Activity report failed (HTTP \(code))"
+        case .failure(is DecodingError):
+            activityReply = nil; activityAt = now; activityError = ActivitySummary.pending
+        case .failure:
+            break
+        }
+        publish()
+    }
+
+    /// Capabilities with a deployment a node reports now (see ActivityCatalog.installed); unknown
+    /// while neither deployment report is fresh.
+    private func installedCapabilities(hosts: NotchHostsReply?, metrics: NotchMetricsReply?) -> Set<String>? {
+        guard hosts != nil || metrics != nil else { return nil }
+        let deployed = (metrics?.workers ?? []).map(\.model)
+            + (hosts.map(NotchSnapshot.uniqueHosts) ?? []).filter { $0.reachable != false }
+                .flatMap { ($0.hardware?.managed_workers ?? []).map(\.model) }
+        return ActivityCatalog.installed(deployed: deployed, registry: access?.modelCapabilities ?? [:])
     }
 
     // MARK: oMLX
@@ -1029,9 +1113,20 @@ final class NotchTelemetry: ObservableObject {
                                        staleAfter: staleAfter, at: now)
         // A cached reply older than `staleAfter` is not passed on as current data.
         let metrics = metricsAt.map { now.timeIntervalSince($0) <= staleAfter } == true ? metricsReply : nil
-        snapshot = NotchSnapshot.derive(hosts: freshHosts(at: now), metrics: metrics, usage: usage, energy: energy,
+        let hosts = freshHosts(at: now)
+        var snap = NotchSnapshot.derive(hosts: hosts, metrics: metrics, usage: usage, energy: energy,
                                         omlx: omlxStatus, omlxActivity: omlxActivity, omlxLedger: omlxLedger,
                                         at: now, calendar: calendar)
+        activityFreshness = Self.freshness(of: activityAt, offline: engineOffline ?? "Waiting for the first activity report",
+                                           isOffline: engineOffline != nil, staleAfter: activityStaleAfter, at: now)
+        // Yesterday's report is not shown after midnight; the next poll asks for the new day.
+        let today = LocalDay(now: now, calendar: calendar)
+        let reply = activityDay.map { calendar.isDate($0.since, inSameDayAs: now) } == true ? activityReply : nil
+        snap.activity = ActivitySummary.derive(reply, day: today, installed: installedCapabilities(hosts: hosts, metrics: metrics),
+                                               knownHosts: (hosts.map(NotchSnapshot.uniqueHosts) ?? []).map(\.host),
+                                               error: reply == nil ? activityError : nil)
+        snap.activity.recentJob = jobFinishedAfter.map { now.timeIntervalSince($0) <= 60 } ?? false
+        snapshot = snap
         freshness = snapshot.productionSource == NotchSnapshot.omlxSourceName ? omlxFreshness : engineFreshness
     }
 
