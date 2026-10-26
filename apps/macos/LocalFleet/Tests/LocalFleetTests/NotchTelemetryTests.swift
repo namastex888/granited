@@ -542,7 +542,9 @@ private func eventually(_ seconds: Double = 2, _ check: () -> Bool) async -> Boo
         f.set("/internal/metrics", .json(metrics2)); f.set("/internal/hosts", .hang)
         let t = telemetry(f, omlx: false)
         t.start { running }
-        #expect(await eventually(1) { t.activeHistory.count >= 5 })
+        // Hosts never answer, so a stalled loop stays at one sample; 5 s leaves a loaded CI runner room
+        // for the 5 samples (250 ms at 50 ms), which once took over 1 s there.
+        #expect(await eventually(5) { t.activeHistory.count >= 5 })
         t.stop()
     }
 }
