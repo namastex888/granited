@@ -195,6 +195,8 @@ pub struct Runtime {
     pub unloaded_ms: Option<u128>,
     pub last_used: Instant,
     pub native_port: Option<u16>,
+    /// The context one request gets, as the engine reported it at load.
+    pub context_tokens: Option<u64>,
 }
 
 pub struct Worker {
@@ -619,6 +621,7 @@ impl Service {
         let mut rt = worker.runtime.lock().unwrap();
         rt.state = "unloaded";
         rt.unloaded_ms = Some(start.elapsed().as_millis());
+        rt.context_tokens = None;
         Ok(())
     }
 
@@ -687,6 +690,7 @@ impl Service {
                     ),
                 ));
             }
+            self.record_context(worker).await;
             self.mark_loaded(worker, started);
             return Ok(());
         }
@@ -748,6 +752,7 @@ impl Service {
         if worker.spec.backend == "llama_cpp" && worker.process.lock().unwrap().is_some() {
             let start = Instant::now();
             self.native_model_action(worker, "load").await?;
+            self.record_context(worker).await;
             self.mark_loaded(worker, start);
             return Ok(());
         }
@@ -912,6 +917,7 @@ impl Service {
                 if worker.spec.backend == "omlx" {
                     self.omlx_preload(worker, start).await?;
                 }
+                self.record_context(worker).await;
                 self.mark_loaded(worker, start);
                 return Ok(());
             }
@@ -1200,6 +1206,65 @@ impl Service {
         }
     }
 
+    /// The context one request gets on this engine, read once per load: llama.cpp reports its
+    /// per-slot `n_ctx` (the total divided by `-np`), vLLM its `max_model_len`.
+    async fn record_context(&self, worker: &Worker) {
+        if worker.runtime.lock().unwrap().context_tokens.is_some() {
+            return;
+        }
+        let get = |url: reqwest::Url| async {
+            let response = self
+                .client
+                .get(url)
+                .timeout(Duration::from_secs(3))
+                .send()
+                .await
+                .ok()?;
+            response.json::<Value>().await.ok()
+        };
+        let base = &worker.spec.base_url;
+        let served = match worker.spec.backend.as_str() {
+            "llama_cpp" => {
+                let Ok(mut url) = reqwest::Url::parse(&format!("{base}/props")) else {
+                    return;
+                };
+                let alias = worker
+                    .spec
+                    .backend_model
+                    .as_deref()
+                    .unwrap_or(&worker.spec.model);
+                url.query_pairs_mut().append_pair("model", alias);
+                get(url)
+                    .await
+                    .and_then(|v| v["default_generation_settings"]["n_ctx"].as_u64())
+            }
+            "vllm" => {
+                let Ok(url) = reqwest::Url::parse(&format!("{base}/v1/models")) else {
+                    return;
+                };
+                get(url).await.and_then(|v| {
+                    v["data"]
+                        .as_array()?
+                        .iter()
+                        .find(|m| m["id"] == worker.spec.model)?["max_model_len"]
+                        .as_u64()
+                })
+            }
+            _ => None,
+        };
+        worker.runtime.lock().unwrap().context_tokens = served;
+    }
+
+    /// The per-request context this node serves `model` with: the engine's own figure once
+    /// loaded, else the deployment's configured `context_tokens`.
+    pub fn context_of(&self, model: &str) -> Option<(u64, &'static str)> {
+        let worker = self.workers.get(model)?;
+        if let Some(served) = worker.runtime.lock().unwrap().context_tokens {
+            return Some((served, "engine"));
+        }
+        worker.spec.context_tokens.map(|n| (n, "config"))
+    }
+
     fn mark_loaded(&self, worker: &Worker, start: Instant) {
         let mut rt = worker.runtime.lock().unwrap();
         rt.state = "ready";
@@ -1441,6 +1506,7 @@ pub fn new_workers(specs: Vec<Deployment>) -> BTreeMap<String, Arc<Worker>> {
                     unloaded_ms: None,
                     last_used: Instant::now(),
                     native_port: None,
+                    context_tokens: None,
                 }),
             });
             (id, worker)

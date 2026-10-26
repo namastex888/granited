@@ -25,6 +25,17 @@ pub enum Modality {
     Chat,
     Embeddings,
     Forecast,
+    /// Chat with image parts, served by a vision model.
+    Vision,
+    /// Speech to text, as a stage before chat.
+    Transcription,
+}
+
+/// A model that ran before the reply, such as speech to text for an `input_audio` part.
+#[derive(Clone, Debug, Serialize)]
+pub struct Stage {
+    pub modality: Modality,
+    pub model: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -158,6 +169,8 @@ pub struct Route {
     pub fallback_reason: Option<FallbackReason>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub clamps: Vec<Clamp>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<Stage>,
 }
 
 impl Route {
@@ -190,6 +203,7 @@ impl Route {
             fallback_reason: (other && !(why == Why::Sticky && first_available))
                 .then_some(FallbackReason::PreferredUnavailable),
             clamps: Vec::new(),
+            stages: Vec::new(),
         }
     }
 
@@ -382,6 +396,21 @@ mod tests {
                 && held.contains(r#""preferred":"granite-4.2-8b""#)
         );
         assert!(!held.contains("fallback_reason"));
+        let mut staged = Route::new(
+            Modality::Vision,
+            "granite-vision-4.1-4b",
+            "granite-vision-4.1-4b",
+            true,
+            Thread::Main,
+            Why::Warm,
+        );
+        staged.stages.push(Stage {
+            modality: Modality::Transcription,
+            model: "granite-speech-5.0-470m-turboctc".into(),
+        });
+        assert!(staged.header().unwrap().contains(
+            r#""stages":[{"modality":"transcription","model":"granite-speech-5.0-470m-turboctc"}]"#
+        ));
         let longest = "m".repeat(64);
         let mut big = Route::new(
             Modality::Chat,

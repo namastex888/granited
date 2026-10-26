@@ -107,10 +107,18 @@ pub struct Auto {
     pub enabled: bool,
     #[serde(default)]
     pub prefer: BTreeMap<String, Vec<String>>,
+    /// Chat with `image_url` parts goes to `prefer.vision`, never evicting, like text chat.
+    #[serde(default)]
+    pub images: bool,
+    /// Chat with `input_audio` parts is transcribed by `prefer.transcription` first.
+    #[serde(default)]
+    pub audio: bool,
 }
 
 /// The capabilities `auto` serves; every other endpoint answers `unsupported_auto`.
 pub const AUTO_CAPABILITIES: [&str; 3] = ["chat", "embeddings", "forecast"];
+/// Preference lists that only serve parts of an `auto` chat request, never their own endpoint.
+pub const AUTO_INPUTS: [&str; 2] = ["vision", "transcription"];
 const MAX_AUTO_ID: usize = 64;
 
 /// `auto` is reserved, and every preference must name a registered model of the right kind.
@@ -130,9 +138,11 @@ fn validate_auto(config: &Config, registry: &Registry) -> Result<(), String> {
         return Err("`auto` is reserved and cannot name a model, alias or peer model".into());
     }
     for (capability, ids) in &config.auto.prefer {
-        if !AUTO_CAPABILITIES.contains(&capability.as_str()) {
+        if !AUTO_CAPABILITIES.contains(&capability.as_str())
+            && !AUTO_INPUTS.contains(&capability.as_str())
+        {
             return Err(format!(
-                "auto.prefer.{capability}: auto serves only chat, embeddings and forecast"
+                "auto.prefer.{capability}: auto serves only chat, embeddings, forecast, vision and transcription"
             ));
         }
         if ids.is_empty() {
@@ -148,13 +158,33 @@ fn validate_auto(config: &Config, registry: &Registry) -> Result<(), String> {
                 ))?;
             if !model.capabilities.contains(capability)
                 || (capability == "chat" && model.family != "language")
+                || (capability == "vision" && !model.capabilities.iter().any(|c| c == "chat"))
                 || (capability == "forecast"
                     && model.metadata.get("license") != Some(&Value::from("apache-2.0")))
             {
                 return Err(format!(
-                    "auto.prefer.{capability}: {id} must declare {capability} (chat: family language; forecast: Apache-2.0)"
+                    "auto.prefer.{capability}: {id} must declare {capability} (chat: family language; vision: also chat; forecast: Apache-2.0)"
                 ));
             }
+        }
+    }
+    // The speech stage forwards JSON, and a peer's /v1/audio/transcriptions takes only multipart,
+    // so speech to text must run on the node that resolves `auto`.
+    if let Some(ids) = config.auto.prefer.get("transcription")
+        && let Some(id) = ids
+            .iter()
+            .find(|id| !config.deployments.iter().any(|d| &d.model == *id))
+    {
+        return Err(format!(
+            "auto.prefer.transcription: {id} must be deployed on this node, not only on a peer"
+        ));
+    }
+    for (on, flag, key) in [
+        (config.auto.images, "images", "vision"),
+        (config.auto.audio, "audio", "transcription"),
+    ] {
+        if on && !config.auto.prefer.contains_key(key) {
+            return Err(format!("auto.{flag} needs auto.prefer.{key}"));
         }
     }
     Ok(())
@@ -276,7 +306,8 @@ mod tests {
             model("granite-4.2-8b", "language", &["chat"], "apache-2.0"),
             model("granite-vision-4.1-4b", "vision", &["chat", "vision"], "apache-2.0"),
             model("granite-embedding-97m-multilingual-r2", "embedding", &["embeddings"], "apache-2.0"),
-            model("granite-timeseries-patchtst-fm-r2", "time_series", &["forecast"], "openmdw-1.0")]}))
+            model("granite-timeseries-patchtst-fm-r2", "time_series", &["forecast"], "openmdw-1.0"),
+            model("granite-speech-5.0-470m-turboctc", "speech", &["transcription"], "apache-2.0")]}))
         .unwrap();
         (config, registry)
     }
@@ -288,11 +319,38 @@ mod tests {
             &[],
         );
         assert!(validate_auto(&ok.0, &ok.1).is_ok());
+        let inputs = fleet(
+            json!({"chat":["granite-4.2-8b"],"vision":["granite-vision-4.1-4b"]}),
+            &[],
+        );
+        assert!(validate_auto(&inputs.0, &inputs.1).is_ok());
+        let remote_speech = fleet(
+            json!({"chat":["granite-4.2-8b"],"transcription":["granite-speech-5.0-470m-turboctc"]}),
+            &["granite-speech-5.0-470m-turboctc"],
+        );
+        assert!(
+            validate_auto(&remote_speech.0, &remote_speech.1).is_err(),
+            "speech to text must be deployed on the entry node"
+        );
+        let mut no_list = fleet(json!({"chat":["granite-4.2-8b"]}), &[]);
+        no_list.0.auto.images = true;
+        assert!(
+            validate_auto(&no_list.0, &no_list.1).is_err(),
+            "images needs prefer.vision"
+        );
+        no_list.0.auto.images = false;
+        no_list.0.auto.audio = true;
+        assert!(
+            validate_auto(&no_list.0, &no_list.1).is_err(),
+            "audio needs prefer.transcription"
+        );
         for bad in [
             json!({"chat":["granite-vision-4.1-4b"]}),
             json!({"embeddings":["granite-4.2-8b"]}),
             json!({"forecast":["granite-timeseries-patchtst-fm-r2"]}),
-            json!({"vision":["granite-vision-4.1-4b"]}),
+            json!({"vision":["granite-4.2-8b"]}),
+            json!({"transcription":["granite-4.2-8b"]}),
+            json!({"rerank":["granite-4.2-8b"]}),
             json!({"chat":[]}),
             json!({"chat":["granite-unknown"]}),
         ] {

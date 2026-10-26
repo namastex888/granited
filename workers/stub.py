@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic stand-in worker for tests and development. It loads no model and serves no real inference."""
 import argparse
+import base64
 import hashlib
 import json
 import math
@@ -46,12 +47,17 @@ class Stub:
             if 'SLOW' in text:
                 time.sleep(2)
             # Echo what reached the engine, so tests can check effort, budget and sampling.
+            parts = [p for m in data.get('messages', []) if isinstance(m.get('content'), list) for p in m['content']]
             seen = dict(model=data['model'], temperature=data.get('temperature'), max_tokens=data.get('max_tokens'),
                         thinking_budget_tokens=data.get('thinking_budget_tokens'),
-                        chat_template_kwargs=data.get('chat_template_kwargs'))
+                        chat_template_kwargs=data.get('chat_template_kwargs'), reasoning_effort=data.get('reasoning_effort'),
+                        parts=[p.get('type') for p in parts], texts=[p['text'] for p in parts if p.get('type') == 'text'])
             return dict(object='chat.completion', model=self.args.model,
                         choices=[dict(index=0, finish_reason='stop', message=dict(role='assistant', content=json.dumps(seen)))],
                         usage=dict(prompt_tokens=1, completion_tokens=1, total_tokens=2))
+        if path == '/v1/audio/transcriptions' and self.args.family == 'speech':
+            audio = base64.b64decode(data['audio_base64'], validate=True)
+            return dict(model=self.args.model, text=f'stub heard {len(audio)} bytes')
         raise Unsupported(f'Stub does not implement {path}')
 
 
@@ -60,7 +66,7 @@ def main():
     p.add_argument('--model', required=True)
     p.add_argument('--repo', default='stub')
     p.add_argument('--revision', required=True)
-    p.add_argument('--family', choices=['embedding', 'timeseries', 'language'], default='embedding')
+    p.add_argument('--family', choices=['embedding', 'timeseries', 'language', 'speech'], default='embedding')
     p.add_argument('--host', default='127.0.0.1', choices=['127.0.0.1'])
     p.add_argument('--port', type=int, required=True)
     p.add_argument('--delay-ms', type=int, default=0)

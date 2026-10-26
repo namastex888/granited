@@ -180,10 +180,37 @@ pub fn router(service: Arc<Service>) -> Router {
 }
 
 async fn models(State(s): State<Arc<Service>>) -> Json<Value> {
-    let mut data = s.models.values().map(|m|json!({"id":m.id,"object":"model","created":0,"owned_by":"ibm-granite","revision":m.hf_revision,"family":m.family,"capabilities":m.capabilities,"deployment_configured":s.workers.contains_key(&m.id)||s.config.peers.iter().any(|p|p.models.contains(&m.id))})).collect::<Vec<_>>();
+    let mut data = s.models.values().map(|m| {
+        let mut entry = json!({"id":m.id,"object":"model","created":0,"owned_by":"ibm-granite","revision":m.hf_revision,"family":m.family,"capabilities":m.capabilities,"deployment_configured":s.workers.contains_key(&m.id)||s.config.peers.iter().any(|p|p.models.contains(&m.id))});
+        // Per request, on this node; "engine" once the engine reported it at load.
+        if let Some((tokens, source)) = s.context_of(&m.id) {
+            entry["context_tokens"] = json!(tokens);
+            entry["context_source"] = json!(source);
+        }
+        entry
+    }).collect::<Vec<_>>();
     let auto = auto_capabilities(&s);
     if !auto.is_empty() {
-        data.insert(0, json!({"id":"auto","object":"model","created":0,"owned_by":"localfleet","family":"auto","capabilities":auto,"deployment_configured":true}));
+        let mut inputs = vec!["text"];
+        let deployed = |key: &str| {
+            s.config
+                .auto
+                .prefer
+                .get(key)
+                .into_iter()
+                .flatten()
+                .any(|id| {
+                    s.workers.contains_key(id)
+                        || s.config.peers.iter().any(|p| p.models.contains(id))
+                })
+        };
+        if auto.contains(&"chat") && s.config.auto.images && deployed("vision") {
+            inputs.push("image");
+        }
+        if auto.contains(&"chat") && s.config.auto.audio && deployed("transcription") {
+            inputs.push("audio");
+        }
+        data.insert(0, json!({"id":"auto","object":"model","created":0,"owned_by":"localfleet","family":"auto","capabilities":auto,"input_modalities":inputs,"deployment_configured":true}));
     }
     Json(json!({"object":"list","data":data}))
 }
@@ -231,6 +258,221 @@ fn auto_refusal(response: &Response) -> Option<String> {
     }
 }
 
+/// Largest decoded image part a chat request may carry.
+const MAX_IMAGE_BYTES: usize = 8 << 20;
+/// Largest decoded `input_audio` part `auto` transcribes.
+const MAX_AUDIO_BYTES: usize = 16 << 20;
+const TRANSCRIBE: &str = "/v1/audio/transcriptions";
+
+fn content_parts(value: &Value) -> impl Iterator<Item = &Value> {
+    value["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["content"].as_array())
+        .flatten()
+}
+
+/// The content part types a chat request may carry. A part of any other type, or with no type,
+/// is refused: `video_url`, `audio_url`, `input_image`, `file` and the like can name a URL an
+/// engine would fetch from inside the fleet.
+const CHAT_PARTS: [&str; 4] = ["text", "image_url", "input_audio", "refusal"];
+
+/// Content parts are allowlisted by type, and image parts must be inline `data:` URIs of png,
+/// jpeg (or jpg) or webp in standard base64, at most 8 MiB decoded. Returns whether the request
+/// carries an image.
+fn check_images(value: &Value) -> Result<bool, String> {
+    let mut any = false;
+    for message in value["messages"].as_array().into_iter().flatten() {
+        if !matches!(
+            message.get("content"),
+            None | Some(Value::Null | Value::String(_) | Value::Array(_))
+        ) {
+            return Err("message content must be a string or an array of parts".into());
+        }
+    }
+    for part in content_parts(value) {
+        let kind = part["type"].as_str().unwrap_or("");
+        if !CHAT_PARTS.contains(&kind) {
+            return Err(format!(
+                "content part type {:?} is not accepted; use text, image_url (data: URI) or input_audio",
+                part["type"]
+            ));
+        }
+        if kind != "image_url" {
+            continue;
+        }
+        any = true;
+        let url = part["image_url"]["url"].as_str().unwrap_or("");
+        let Some((mime, data)) = url
+            .strip_prefix("data:")
+            .and_then(|rest| rest.split_once(";base64,"))
+        else {
+            return Err(
+                "image_url must be a data: URI (data:image/png;base64,...); remote URLs are not fetched"
+                    .into(),
+            );
+        };
+        let mime = mime.split(';').next().unwrap_or("");
+        if !matches!(
+            mime,
+            "image/png" | "image/jpeg" | "image/jpg" | "image/webp"
+        ) {
+            return Err("image_url must be image/png, image/jpeg or image/webp".into());
+        }
+        let too_big = format!("an image exceeds {} MiB", MAX_IMAGE_BYTES >> 20);
+        if data.len() / 4 * 3 > MAX_IMAGE_BYTES + 3 {
+            return Err(too_big);
+        }
+        match base64::engine::general_purpose::STANDARD.decode(data) {
+            Ok(bytes) if bytes.len() <= MAX_IMAGE_BYTES => {}
+            Ok(_) => return Err(too_big),
+            Err(_) => {
+                return Err("image_url data is not valid standard base64 (no line breaks)".into());
+            }
+        }
+    }
+    Ok(any)
+}
+
+/// A vision model does not think: effort fields are dropped, and the route header carries none.
+fn strip_reasoning(body: &mut Value) {
+    if let Some(body) = body.as_object_mut() {
+        body.remove("reasoning_effort");
+        body.remove("thinking_budget_tokens");
+        if let Some(kwargs) = body
+            .get_mut("chat_template_kwargs")
+            .and_then(Value::as_object_mut)
+        {
+            kwargs.remove("enable_thinking");
+            kwargs.remove("low_effort");
+            if kwargs.is_empty() {
+                body.remove("chat_template_kwargs");
+            }
+        }
+    }
+}
+
+/// Chat with `model: "auto"`: audio parts become text through the speech model first, then
+/// the request goes to the vision list if it carries an image, else to the chat list.
+async fn auto_entry(
+    s: &Arc<Service>,
+    path: &str,
+    mut value: Value,
+    headers: &axum::http::HeaderMap,
+    start: Instant,
+) -> Response {
+    use localfleet_route::{Modality, Stage};
+    if let Err(e) = resolve_auto(s, path, headers) {
+        return e.into_response();
+    }
+    let images = match check_images(&value) {
+        Ok(images) => images,
+        Err(e) => return failure("invalid_schema", e).into_response(),
+    };
+    let audio = content_parts(&value).any(|p| p["type"] == "input_audio");
+    for (present, on, what, flag) in [
+        (images, s.config.auto.images, "Image", "images"),
+        (audio, s.config.auto.audio, "Audio", "audio"),
+    ] {
+        if present && !on {
+            return failure(
+                "unsupported_auto",
+                format!(
+                    "{what} input under auto is off in this profile (auto.{flag}); name a model"
+                ),
+            )
+            .into_response();
+        }
+    }
+    let mut stages: Vec<Stage> = Vec::new();
+    let mut positions = Vec::new();
+    for (m, message) in value["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        for (p, part) in message["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            if part["type"] == "input_audio" {
+                positions.push((m, p));
+            }
+        }
+    }
+    for (m, p) in positions {
+        let part = &value["messages"][m]["content"][p];
+        if part["input_audio"]["format"] != "wav" {
+            return failure("invalid_schema", "input_audio format must be wav").into_response();
+        }
+        let data = part["input_audio"]["data"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
+        match base64::engine::general_purpose::STANDARD.decode(&data) {
+            Ok(bytes) if bytes.len() <= MAX_AUDIO_BYTES => {}
+            Ok(_) => {
+                return failure(
+                    "invalid_schema",
+                    format!("input_audio exceeds {} MiB", MAX_AUDIO_BYTES >> 20),
+                )
+                .into_response();
+            }
+            Err(_) => {
+                return failure("invalid_schema", "input_audio data is not valid base64")
+                    .into_response();
+            }
+        }
+        // User audio only ever reaches speech to text, never a voice-reference slot.
+        let body = json!({"model":s.config.auto.prefer["transcription"][0],"audio_base64":data});
+        if let Err(e) = contracts::validate(TRANSCRIBE, &body) {
+            return failure("invalid_schema", e).into_response();
+        }
+        let (response, served) = auto_route(
+            s,
+            TRANSCRIBE,
+            Modality::Transcription,
+            body,
+            headers,
+            start,
+            Vec::new(),
+        )
+        .await;
+        if !response.status().is_success() {
+            return response;
+        }
+        let text = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .and_then(|v| v["text"].as_str().map(str::to_owned));
+        let Some(text) = text else {
+            return failure("backend_error", "The speech model returned no text").into_response();
+        };
+        value["messages"][m]["content"][p] = json!({"type":"text","text":text});
+        if let Some(model) = served
+            && !stages.iter().any(|stage| stage.model == model)
+        {
+            stages.push(Stage {
+                modality: Modality::Transcription,
+                model,
+            });
+        }
+    }
+    let modality = if images {
+        Modality::Vision
+    } else {
+        Modality::Chat
+    };
+    auto_route(s, path, modality, value, headers, start, stages)
+        .await
+        .0
+}
+
 /// `auto`'s effort, written into the body so `normalize_chat` sees one explicit choice: the
 /// client's own wins; a thinking budget alone means full; otherwise off. Then the one clamp:
 /// a model that leaks reasoning with thinking off is sampled at temperature 0.
@@ -268,42 +510,55 @@ fn auto_effort(
     (effort, clamps)
 }
 
-/// Chat with `model: "auto"`. Every preferred model's hosts are classified once; warm hosts are
-/// tried first in preference order, then cold hosts whose load evicts nothing, and nothing else.
-/// Each attempt leases in a mode that cannot load (warm) or cannot evict (cold), so the rule
-/// holds where the load happens. A refusal before running moves to the next host.
-async fn auto_chat(
+/// One `auto` modality. Every preferred model's hosts are classified once; warm hosts are tried
+/// first in preference order, then cold hosts whose load evicts nothing, and nothing else. Each
+/// attempt leases in a mode that cannot load (warm) or cannot evict (cold), so the rule holds
+/// where the load happens. A refusal before running moves to the next host. Returns the model
+/// that served, if one did.
+async fn auto_route(
     s: &Arc<Service>,
     path: &str,
+    modality: localfleet_route::Modality,
     value: Value,
     headers: &axum::http::HeaderMap,
     start: Instant,
-) -> Response {
+    stages: Vec<localfleet_route::Stage>,
+) -> (Response, Option<String>) {
     use localfleet_route::{Modality, Route, Thread, Why};
-    if let Err(e) = resolve_auto(s, path, headers) {
-        return e.into_response();
-    }
+    let (key, noun) = match modality {
+        Modality::Vision => ("vision", "vision"),
+        Modality::Transcription => ("transcription", "speech"),
+        _ => ("chat", "chat"),
+    };
     let thread = match thread_of(headers) {
         Ok(thread) => thread,
-        Err(e) => return e.into_response(),
+        Err(e) => return (e.into_response(), None),
     };
     let conversation = match headers.get("x-granite-conversation").map(|v| v.to_str()) {
         None => None,
         Some(Ok(id)) if localfleet_route::Conversations::valid_id(id) => Some(id.to_owned()),
         Some(_) => {
-            return failure(
+            let e = failure(
                 "invalid_schema",
                 "x-granite-conversation must be 1-128 characters from A-Z, a-z, 0-9, '.', '_', ':' and '-'",
-            )
-            .into_response();
+            );
+            return (e.into_response(), None);
         }
     };
-    let prefer = &s.config.auto.prefer["chat"];
+    // Conversations stick to a text chat model only; an image or speech stage never moves one.
+    let conversation = conversation.filter(|_| modality == Modality::Chat);
+    let prefer = &s.config.auto.prefer[key];
     let first = prefer[0].as_str();
+    let capability = contracts::capability(path).unwrap_or("chat");
     let background = thread == "background";
     let mut classes = Vec::new();
     for id in prefer {
-        classes.push((id.as_str(), s.auto_hosts(id, "chat", background).await));
+        let mut hosts = s.auto_hosts(id, capability, background).await;
+        if modality == Modality::Transcription {
+            // User audio is transcribed on this node only; it never leaves for a peer.
+            hosts.retain(|(peer, _)| peer.is_none());
+        }
+        classes.push((id.as_str(), hosts));
     }
     let usable = |id: &str| {
         classes.iter().any(|(m, hosts)| {
@@ -340,9 +595,19 @@ async fn auto_chat(
         let model = &s.models[id];
         let mut body = value.clone();
         body["model"] = json!(id);
-        let (effort, clamps) = auto_effort(model, &mut body);
+        let (effort, clamps) = match modality {
+            Modality::Chat => {
+                let (effort, clamps) = auto_effort(model, &mut body);
+                (Some(effort), clamps)
+            }
+            Modality::Vision => {
+                strip_reasoning(&mut body);
+                (None, Vec::new())
+            }
+            _ => (None, Vec::new()),
+        };
         if let Err(e) = prepare(s, path, id, &mut body) {
-            return e.into_response();
+            return (e.into_response(), None);
         }
         let mode = if class == HostClass::Warm {
             LoadMode::WarmOnly
@@ -365,9 +630,10 @@ async fn auto_chat(
         } else {
             why
         };
-        let mut route = Route::new(Modality::Chat, id, first, usable(first), thread_word, why);
-        route.effort = Some(effort);
+        let mut route = Route::new(modality, id, first, usable(first), thread_word, why);
+        route.effort = effort;
         route.clamps = clamps;
+        route.stages = stages;
         if let Some(header) = route.header()
             && let Ok(value) = HeaderValue::from_str(&header)
         {
@@ -381,7 +647,7 @@ async fn auto_chat(
                 .unwrap()
                 .put(conversation, id, Instant::now());
         }
-        return response;
+        return (response, Some(id.to_owned()));
     }
     // Nothing could serve without loading over a ready model. The reason is closed and the
     // per-host detail stays in /internal/hosts and the logs.
@@ -395,21 +661,25 @@ async fn auto_chat(
             "busy",
             StatusCode::TOO_MANY_REQUESTS,
             Some("2"),
-            "Every loaded chat model is busy; retry shortly",
+            format!("Every loaded {noun} model is busy; retry shortly"),
         )
     } else if all.clone().any(|c| c != HostClass::Held) {
         (
             "no_room",
             StatusCode::SERVICE_UNAVAILABLE,
             Some("30"),
-            "No preferred chat model can serve without evicting a loaded model; name a model to allow loading",
+            format!(
+                "No preferred {noun} model can serve without evicting a loaded model; name a model to allow loading"
+            ),
         )
     } else {
         (
             "held",
             StatusCode::SERVICE_UNAVAILABLE,
             None,
-            "Every preferred chat model is held or not deployed here; an operator must release one",
+            format!(
+                "Every preferred {noun} model is held or not deployed here; an operator must release one"
+            ),
         )
     };
     let summary: Vec<_> = classes
@@ -424,7 +694,7 @@ async fn auto_chat(
             )
         })
         .collect();
-    tracing::info!(?summary, reason, "auto chat found no host");
+    tracing::info!(?summary, reason, noun, "auto found no host");
     let mut response = (
         status,
         Json(json!({"error":{"type":"granite_error","code":"auto_unavailable","reason":reason,"message":message}})),
@@ -439,7 +709,7 @@ async fn auto_chat(
             .headers_mut()
             .insert("retry-after", HeaderValue::from_static(wait));
     }
-    response
+    (response, None)
 }
 
 /// `auto` resolves once, on the node that first receives the request; peers only ever see a
@@ -629,6 +899,21 @@ async fn infer(
 }
 async fn audio(State(s): State<Arc<Service>>, request: Request) -> Response {
     let headers = request.headers().clone();
+    // The JSON form ({model, audio_base64, ...}) is what a node forwards to its peer.
+    if headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/json"))
+    {
+        let value = match axum::body::to_bytes(request.into_body(), 32 * 1024 * 1024).await {
+            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                Ok(value) => value,
+                Err(e) => return failure("invalid_schema", e.to_string()).into_response(),
+            },
+            Err(e) => return failure("invalid_schema", e.to_string()).into_response(),
+        };
+        return dispatch(s, "/v1/audio/transcriptions", value, &headers).await;
+    }
     let mut multipart = match Multipart::from_request(request, &s).await {
         Ok(m) => m,
         Err(e) => return failure("invalid_schema", e.to_string()).into_response(),
@@ -682,7 +967,7 @@ async fn dispatch(
     let start = Instant::now();
     if s.config.auto.enabled && value["model"] == "auto" {
         if path == "/v1/chat/completions" && auto_capabilities(&s).contains(&"chat") {
-            return auto_chat(&s, path, value, headers, start).await;
+            return auto_entry(&s, path, value, headers, start).await;
         }
         match resolve_auto(&s, path, headers) {
             Ok(id) => value["model"] = json!(id),
@@ -743,6 +1028,11 @@ fn prepare(s: &Service, path: &str, id: &str, value: &mut Value) -> Result<(), F
             "invalid_schema",
             "Switch requires explicit chat_template_kwargs.adapter_name",
         ));
+    }
+    if path == "/v1/chat/completions"
+        && let Err(e) = check_images(value)
+    {
+        return Err(failure("invalid_schema", e));
     }
     if path == "/v1/chat/completions"
         && model.family == "language"
@@ -934,6 +1224,11 @@ async fn run(
             HeaderValue::from_str(&s.config.host_id).unwrap(),
         );
     }
+    if local && let Some((tokens, _)) = s.context_of(id) {
+        response
+            .headers_mut()
+            .insert("x-granite-context-tokens", HeaderValue::from(tokens));
+    }
     if local && let Some(worker) = s.workers.get(id) {
         response.headers_mut().insert(
             "x-granite-device",
@@ -1046,6 +1341,7 @@ async fn forward_response(
         "x-granite-host",
         "x-granite-model-alias",
         "x-granite-reasoning-tokens",
+        "x-granite-context-tokens",
         "server-timing",
     ] {
         if let Some(value) = headers.get(name) {

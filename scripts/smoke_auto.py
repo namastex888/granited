@@ -6,6 +6,7 @@ sharing one exclusive device (a GPU-like rule: one resident model) or the CPU (n
 The checks cover the auto v0 spec: warm before cold, no load that evicts a ready model, visible
 fallbacks, the temperature clamp, sticky conversations, the closed aggregate refusal, and effort.
 """
+import base64
 import concurrent.futures
 import json
 import os
@@ -22,6 +23,26 @@ ROOT = Path(__file__).resolve().parents[1]
 API, ADMIN = 'smoke-api-key-0123456789', 'smoke-admin-key-0123456789'
 REGISTRY = {m['id']: m for m in json.loads((ROOT / 'configs/registry.json').read_text())['models']}
 B8, B3, VISION = 'granite-4.2-8b', 'granite-4.2-3b', 'granite-vision-4.1-4b'
+SPEECH = 'granite-speech-5.0-470m-turboctc'
+PNG = 'data:image/png;base64,' + base64.b64encode(b'\x89PNG\r\n\x1a\n' + bytes(64)).decode()
+def wav(seconds=0.5, rate=16000):
+    import io, wave
+    buffer = io.BytesIO()
+    with wave.open(buffer, 'wb') as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(bytes(2 * int(seconds * rate)))
+    return buffer.getvalue()
+
+
+WAV_BYTES = wav()
+WAV = base64.b64encode(WAV_BYTES).decode()
+
+
+def image(url=PNG):
+    return {'type': 'image_url', 'image_url': {'url': url}}
+
+
+def audio(fmt='wav'):
+    return {'type': 'input_audio', 'input_audio': {'data': WAV, 'format': fmt}}
 
 
 def free_port():
@@ -31,24 +52,25 @@ def free_port():
 
 
 class Router:
-    def __init__(self, device, hold=False, extra=(), models=None, peers=(), host='auto-smoke'):
+    def __init__(self, device, hold=False, extra=(), models=None, peers=(), host='auto-smoke', auto=None):
         self.state = tempfile.TemporaryDirectory()
         self.port = free_port()
         deployments = []
         for model in (models or (B8, B3)) + tuple(extra):
             port = free_port()
+            family = 'speech' if model == SPEECH else 'language'
             deployments.append(dict(
-                model=model, backend='language_native', base_url=f'http://127.0.0.1:{port}',
+                model=model, backend=family + '_native', base_url=f'http://127.0.0.1:{port}',
                 revision=REGISTRY[model]['hf_revision'], artifact_repo='stub',
-                command=['python3', 'workers/stub.py', '--family', 'language', '--model', model,
+                command=['python3', 'workers/stub.py', '--family', family, '--model', model,
                          '--revision', REGISTRY[model]['hf_revision'], '--port', str(port)],
-                memory_bytes=64 << 20, device=device, health_path='/healthz', identity_path='/internal/metadata',
+                memory_bytes=64 << 20, context_tokens=4096, device=device, health_path='/healthz', identity_path='/internal/metadata',
                 runtime_manifest='workers/stub.py', backend_build='stub', max_concurrency=1, load_timeout_seconds=60,
                 **({'hold_reason': 'held for the test'} if hold else {})))
         config = dict(listen=f'127.0.0.1:{self.port}', host_id=host, registry='configs/registry.json',
                       state_dir=self.state.name, api_key_env='GRANITE_API_KEY', admin_key_env='GRANITE_ADMIN_KEY',
                       ram_reserve_bytes=0, accelerator_reserve_bytes=0, deployments=deployments, peers=list(peers),
-                      auto=dict(enabled=True, prefer=dict(chat=[B8, B3])))
+                      auto=auto or dict(enabled=True, prefer=dict(chat=[B8, B3])))
         path = Path(self.state.name) / 'config.json'
         path.write_text(json.dumps(config))
         env = dict(os.environ, GRANITE_API_KEY=API, GRANITE_ADMIN_KEY=ADMIN, PEER_TOKEN=ADMIN)
@@ -62,8 +84,8 @@ class Router:
                 time.sleep(0.25)
         raise SystemExit('router did not start')
 
-    def chat(self, model='auto', text='hi', headers=None, **body):
-        data = json.dumps(dict(model=model, messages=[dict(role='user', content=text)], **body)).encode()
+    def chat(self, model='auto', text='hi', headers=None, content=None, **body):
+        data = json.dumps(dict(model=model, messages=[dict(role='user', content=content or text)], **body)).encode()
         req = urllib.request.Request(f'http://127.0.0.1:{self.port}/v1/chat/completions', data,
                                      {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json', **(headers or {})})
         try:
@@ -75,6 +97,23 @@ class Router:
         route = json.loads(head['x-granite-route']) if 'x-granite-route' in head else {}
         seen = json.loads(body['choices'][0]['message']['content']) if status == 200 else {}
         return status, head, body, route, seen
+
+    def transcribe(self, model):
+        boundary = 'smokeboundary'
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n{model}\r\n'
+                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n'
+                'Content-Type: audio/wav\r\n\r\n').encode() + WAV_BYTES + f'\r\n--{boundary}--\r\n'.encode()
+        req = urllib.request.Request(f'http://127.0.0.1:{self.port}/v1/audio/transcriptions', body,
+                                     {'Authorization': 'Bearer ' + API, 'Content-Type': f'multipart/form-data; boundary={boundary}'})
+        try:
+            with urllib.request.urlopen(req, timeout=180) as r:
+                return r.status, {k.lower(): v for k, v in r.headers.items()}
+        except urllib.error.HTTPError as e:
+            return e.code, {k.lower(): v for k, v in e.headers.items()}
+
+    def models(self):
+        req = urllib.request.Request(f'http://127.0.0.1:{self.port}/v1/models', headers={'Authorization': 'Bearer ' + API})
+        return json.loads(urllib.request.urlopen(req, timeout=60).read())['data']
 
     def admin(self, path):
         req = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}', b'{}',
@@ -133,6 +172,9 @@ def main():
               status == 400 and body['error']['code'] == 'invalid_schema')
         status, _, body, _, _ = r.chat(headers={'x-granite-hop': '1'})
         check('a peer hop never resolves auto', status == 400 and body['error']['code'] == 'auto_not_forwardable')
+        status, _, body, _, _ = r.chat(content=[{'type': 'text', 'text': 'what is this'}, image()])
+        check('image input under auto is refused while the profile leaves it off',
+              status == 400 and body['error']['code'] == 'unsupported_auto')
     finally:
         r.close()
 
@@ -205,6 +247,99 @@ def main():
     finally:
         a.close()
         b.close()
+
+    # Image and audio input: a vision list and a speech stage, on the CPU (no eviction rule).
+    omni = dict(enabled=True, images=True, audio=True,
+                prefer=dict(chat=[B8, B3], vision=[VISION], transcription=[SPEECH]))
+    r = Router('cpu', models=(B8, B3, VISION, SPEECH), auto=omni)
+    try:
+        auto_model = next(m for m in r.models() if m['id'] == 'auto')
+        check('/v1/models says auto takes text, image and audio', auto_model.get('input_modalities') == ['text', 'image', 'audio'])
+        b8 = next(m for m in r.models() if m['id'] == B8)
+        status, head, _, _, _ = r.chat(model=B8, reasoning_effort='off')
+        check('per-request context: the configured value before an engine reports one, in /v1/models and on the reply',
+              b8.get('context_tokens') == 4096 and b8.get('context_source') == 'config'
+              and status == 200 and head.get('x-granite-context-tokens') == '4096')
+        status, head, _, route, seen = r.chat(content=[{'type': 'text', 'text': 'what is this'}, image()],
+                                              reasoning_effort='full', thinking_budget_tokens=100)
+        check('an image goes to the vision model with its parts intact and no effort fields',
+              status == 200 and head.get('x-granite-model-alias') == VISION and route.get('modality') == 'vision'
+              and 'effort' not in route and seen.get('parts') == ['text', 'image_url']
+              and seen.get('reasoning_effort') is None and seen.get('thinking_budget_tokens') is None)
+        status, _, body, _, _ = r.chat(content=[image('https://example.com/cat.png')])
+        status2, _, body2, _, _ = r.chat(model=VISION, content=[image('https://example.com/cat.png')])
+        check('a remote image URL is refused, under auto and for an explicit model',
+              status == 400 and status2 == 400 and body['error']['code'] == body2['error']['code'] == 'invalid_schema')
+        remote = 'http://169.254.169.254/latest/meta-data'
+        for shape in ({'type': 'video_url', 'video_url': {'url': remote}}, {'type': 'audio_url', 'audio_url': {'url': remote}},
+                      {'type': 'input_image', 'image_url': remote}, {'type': 'file', 'file': {'url': remote}},
+                      {'image_url': {'url': remote}}):
+            codes = {r.chat(model=m, content=[shape])[0] for m in ('auto', VISION)}
+            check(f'a {shape.get("type", "untyped")} part naming a URL is refused, under auto and explicit', codes == {400})
+        jpg = 'data:image/jpg;base64,' + base64.b64encode(bytes(16)).decode()
+        params = 'data:image/png;name=a.png;base64,' + base64.b64encode(bytes(16)).decode()
+        check('image/jpg and MIME parameters are accepted',
+              r.chat(content=[image(jpg)])[0] == 200 and r.chat(content=[image(params)])[0] == 200)
+        status, _, _, _, _ = r.chat(content=[image('data:image/gif;base64,R0lGOD')])
+        big = 'data:image/png;base64,' + base64.b64encode(bytes(9 << 20)).decode()
+        status2, _, _, _, _ = r.chat(content=[image(big)])
+        check('a gif or an image over 8 MiB is refused', status == 400 and status2 == 400)
+        status, head, _, route, seen = r.chat(content=[audio()])
+        check('audio is transcribed first, and the text goes to the chat list',
+              status == 200 and head.get('x-granite-model-alias') == B8
+              and route.get('stages') == [{'modality': 'transcription', 'model': SPEECH}]
+              and seen.get('parts') == ['text'] and seen.get('texts') == [f'stub heard {len(WAV_BYTES)} bytes'])
+        status, head, _, route, seen = r.chat(content=[audio(), image()])
+        check('audio and an image: transcribed, then the vision model',
+              status == 200 and head.get('x-granite-model-alias') == VISION and route.get('stages')
+              and seen.get('parts') == ['text', 'image_url'])
+        status, _, body, _, _ = r.chat(content=[audio('mp3')])
+        check('audio other than wav is refused', status == 400 and body['error']['code'] == 'invalid_schema')
+    finally:
+        r.close()
+
+    # Speech to text stays on the entry node, even when a peer has the speech model warm.
+    b = Router('cpu', models=(SPEECH,), host='peer-b')
+    a = Router('cpu', models=(B8, SPEECH), host='node-a', auto=dict(
+        enabled=True, audio=True, prefer=dict(chat=[B8], transcription=[SPEECH])),
+        peers=[dict(id='peer-b', url=f'http://127.0.0.1:{b.port}', token_env='PEER_TOKEN', models=[SPEECH])])
+    try:
+        b.admin(f'/admin/models/{SPEECH}/load')
+        for _ in range(100):
+            if b.states().get(SPEECH) == 'ready':
+                break
+            time.sleep(0.1)
+        status, head, _, route, _ = a.chat(content=[audio()])
+        check('audio is transcribed on the entry node, never by a warm peer',
+              b.states().get(SPEECH) == 'ready' and status == 200
+              and route.get('stages') == [{'modality': 'transcription', 'model': SPEECH}]
+              and a.states().get(SPEECH) == 'ready')
+        a.admin(f'/admin/models/{SPEECH}/unload')
+        for _ in range(100):
+            if a.states().get(SPEECH) != 'ready':
+                break
+            time.sleep(0.1)
+        status, head = a.transcribe(SPEECH)
+        check('an explicit transcription forwarded to the warm peer is served (the peer takes the JSON form)',
+              status == 200 and head.get('x-granite-host') == 'peer-b')
+        bad = {'type': 'image_url', 'image_url': {'url': 'http://169.254.169.254/'}}
+        codes = {a.chat(model=m, content=bad)[0] for m in ('auto', B8)}
+        check('object-valued message content is refused, under auto and explicit', codes == {400})
+    finally:
+        a.close()
+        b.close()
+
+    # The vision list never evicts either: 8B is resident on the one exclusive device.
+    r = Router('unified', models=(B8, B3, VISION),
+               auto=dict(enabled=True, images=True, prefer=dict(chat=[B8, B3], vision=[VISION])))
+    try:
+        r.chat()
+        status, head, body, _, _ = r.chat(content=[image()])
+        check('an image never evicts the resident chat model: 503 no_room for the vision list',
+              status == 503 and body['error'].get('reason') == 'no_room' and 'vision' in body['error']['message']
+              and r.states().get(B8) == 'ready' and r.states().get(VISION) != 'ready')
+    finally:
+        r.close()
 
     # Both held: nothing may load.
     r = Router('unified', hold=True)
