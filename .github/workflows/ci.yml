@@ -13,12 +13,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --locked --all-targets -- -D warnings
+      - run: cargo test --workspace --locked
       - run: cargo build --locked
       - run: python3 scripts/smoke_stub.py
       - run: python3 scripts/smoke_fallback.py
+      - run: python3 scripts/smoke_auto.py
+      - run: python3 scripts/readme_gate.py
       - run: PYTHONPATH=benchmarks python3 -m unittest discover -s benchmarks/tests
       - run: python3 -m py_compile scripts/*.py workers/*.py
       - run: python3 scripts/localfleet.py scan

@@ -15,6 +15,11 @@ Please do not open public issues for security problems. Expect an acknowledgemen
 
 ## Known gaps
 
+- `model: "auto"` never evicts a loaded model on the node that resolves it, and it asks a peer to serve only a model that is already loaded (`x-granite-load: warm-only`). Nodes on builds without the `x-granite-load` feature ignore that header: in the 2 s between peer snapshots, such a node may load, or evict to load, for an `auto` request. Any API-key holder may send `x-granite-load: warm-only` on an explicit request; it only forbids loading.
+- Conversation ids (`x-granite-conversation`) share one namespace per node, because a fleet has one API key. Any key holder who guesses an id can reuse it, learn which model served it, and steer that conversation's next pick within the preferred list. The store is bounded (10,000 ids, 30 minutes idle), and a sticky pick can never cause a load that evicts.
+- Separate thinking budgets need the last hop to run a build with `thinking_budget_tokens`. An older last hop passes the field to llama.cpp but does not add it to `max_tokens`, so on that hop thinking can still use part of the reply budget.
+- The `x-granite-route` header tells API-key holders which model served and, when it differs, the preferred one. So it shows whether the preferred model was serving at that moment. It never lists other candidates or their state.
+
 - No TLS: keep traffic on loopback and SSH. Do not bind an agent to a LAN address without a TLS terminator in front of it.
 - Spawned workers inherit the agent's environment, including keys.
 - The rustup bootstrap used when a node has no Rust toolchain fetches `sh.rustup.rs` over HTTPS without a pinned digest; prebuilt release binaries will replace it.

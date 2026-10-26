@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "kind": "smoke",
+  "stage": "rust",
+  "timestamp": "2026-10-25T23:29:39.282643+00:00",
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.12.12 (main, Oct  9 2025, 11:07:00) [Clang 17.0.0 (clang-1700.4.4.1)]",
+  "hostname": "mac",
+  "base_url": "http://127.0.0.1:8420",
+  "fixture": "fixture.jsonl",
+  "fixture_sha256": "2b44e9dcd6f4285bc0e31b294ea709424c83f32a8577c6b31177de50e5b64d7c",
+  "dataset_manifest": null,
+  "concurrency": 2,
+  "repeat": 48,
+  "warmup": 2,
+  "hardware": null,
+  "summary": {
+    "total": 48,
+    "successful": 48,
+    "failed": 0,
+    "wall_seconds": 11.00941737500034,
+    "achieved_requests_per_second": 4.359903741045926,
+    "throughput_kind": "achieved at configured concurrency; not a saturation claim",
+    "latency_p50_s": 0.4747138749989972,
+    "latency_p95_s": 0.5626501669994468,
+    "latency_p99_s": 0.5920267920009792,
+    "mean_latency_95ci_s": [
+      0.4285730458959354,
+      0.4750498323540266
+    ],
+    "model_accuracy": null,
+    "errors_by_code": {},
+    "memory": {
+      "samples": 22,
+      "failed_samples": 0,
+      "interval_s": 0.5,
+      "min_ram_available_bytes": 31650283520,
+      "max_swap_used_bytes": 5414387712,
+      "max_memory_stall_percent": 0.0,
+      "max_accelerator_used_bytes": null,
+      "peak_worker_rss_bytes": {
+        "granite-embedding-97m-multilingual-r2": 890830848
+      },
+      "alarm": null
+    }
+  },
+  "raw_requests": "slots-2.requests.jsonl"
+}

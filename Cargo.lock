@@ -391,6 +391,7 @@ dependencies = [
  "base64",
  "futures-util",
  "libc",
+ "localfleet-route",
  "reqwest",
  "schemars",
  "serde",
@@ -719,6 +720,15 @@ name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
+
+[[package]]
+name = "localfleet-route"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "lock_api"

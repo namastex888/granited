@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "kind": "smoke",
+  "stage": "rust",
+  "timestamp": "2026-10-26T00:06:28.941103+00:00",
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.12.12 (main, Oct  9 2025, 11:07:00) [Clang 17.0.0 (clang-1700.4.4.1)]",
+  "hostname": "mac",
+  "base_url": "http://127.0.0.1:8430",
+  "fixture": "fixture.jsonl",
+  "fixture_sha256": "5609c789456a2499628014e2a59b9840423033218238b0e373f8e39d0cadfe5e",
+  "dataset_manifest": null,
+  "concurrency": 4,
+  "repeat": 2,
+  "warmup": 1,
+  "hardware": null,
+  "summary": {
+    "total": 16,
+    "successful": 16,
+    "failed": 0,
+    "wall_seconds": 17.195928459001152,
+    "achieved_requests_per_second": 0.93045281260314,
+    "throughput_kind": "achieved at configured concurrency; not a saturation claim",
+    "latency_p50_s": 4.298287542000253,
+    "latency_p95_s": 4.3392411670010915,
+    "latency_p99_s": 4.3392411670010915,
+    "mean_latency_95ci_s": [
+      4.281117448312443,
+      4.312712265812365
+    ],
+    "model_accuracy": null,
+    "errors_by_code": {},
+    "memory": {
+      "samples": 34,
+      "failed_samples": 0,
+      "interval_s": 0.5,
+      "min_ram_available_bytes": 16527278080,
+      "max_swap_used_bytes": 10534322176,
+      "max_memory_stall_percent": 0.0,
+      "max_accelerator_used_bytes": null,
+      "peak_worker_rss_bytes": {
+        "granite-4.2-3b": 105709568
+      },
+      "alarm": null
+    }
+  },
+  "raw_requests": "llama-4.requests.jsonl"
+}

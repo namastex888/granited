@@ -3,11 +3,15 @@ name = "granited"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = [".", "crates/localfleet-route"]
+
 [dependencies]
 axum = { version = "=0.8.9", features = ["multipart"] }
 base64 = "=0.23.1"
 futures-util = "=0.3.34"
 libc = "=0.2.191"
+localfleet-route = { path = "crates/localfleet-route" }
 reqwest = { version = "=0.13.5", default-features = false, features = ["json", "stream", "rustls"] }
 schemars = { version = "=1.2.3", features = ["derive"] }
 serde = { version = "=1.0.229", features = ["derive"] }

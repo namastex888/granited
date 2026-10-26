@@ -1,0 +1,36 @@
+{
+  "schema_version": 2,
+  "kind": "smoke",
+  "stage": "rust",
+  "timestamp": "2026-10-26T00:23:20.653334+00:00",
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.12.12 (main, Oct  9 2025, 11:07:00) [Clang 17.0.0 (clang-1700.4.4.1)]",
+  "hostname": "mac",
+  "base_url": "http://127.0.0.1:8440",
+  "fixture": "fixture-8k-3b.jsonl",
+  "fixture_sha256": "a68533343429b15e3c35c8fccd1d32e5ddb9c0b8f9a8586c5b8f5fc8688fbd78",
+  "dataset_manifest": null,
+  "concurrency": 2,
+  "repeat": 1,
+  "warmup": 0,
+  "hardware": null,
+  "summary": {
+    "total": 4,
+    "successful": 4,
+    "failed": 0,
+    "wall_seconds": 21.750001750000592,
+    "achieved_requests_per_second": 0.18390803117980858,
+    "throughput_kind": "achieved at configured concurrency; not a saturation claim",
+    "latency_p50_s": 8.909552416000224,
+    "latency_p95_s": 14.5563191250003,
+    "latency_p99_s": 14.5563191250003,
+    "mean_latency_95ci_s": [
+      8.05076579100023,
+      13.376919374999488
+    ],
+    "model_accuracy": null,
+    "errors_by_code": {},
+    "memory": null
+  },
+  "raw_requests": "fp-omlx-2.requests.jsonl"
+}

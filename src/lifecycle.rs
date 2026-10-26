@@ -31,6 +31,77 @@ const PEER_BACKOFF: Duration = Duration::from_secs(15);
 const ADMISSION_FRESH: Duration = Duration::from_secs(1);
 const MAX_MEMORY_STALL_PERCENT: f64 = 5.0;
 
+/// A load refused for lack of room says nothing about the model's health, so it must not put the
+/// model in the failure cooldown that `score` and `load_cooldown` read.
+fn is_capacity_refusal(code: &str) -> bool {
+    matches!(
+        code,
+        "accelerator_busy"
+            | "insufficient_memory"
+            | "insufficient_vram"
+            | "memory_pressure"
+            | "admission_busy"
+            | "model_not_warm"
+    )
+}
+
+/// Scores at or above this are loaded workers with a free slot; below it, cold loads.
+const WARM_SCORE: u64 = 1_000_000;
+
+/// What one host can do for a model right now, for `model: "auto"`, which must never evict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostClass {
+    /// Ready with a free slot.
+    Warm,
+    /// Ready, every slot taken.
+    Full,
+    /// Local, cold, fits, and no ready model shares its exclusive accelerator.
+    ColdFree,
+    /// Local and cold; loading it would evict a ready model.
+    WouldDisplace,
+    /// Memory, VRAM or memory pressure rule the load out, or a peer is not warm.
+    NoFit,
+    /// Held, not deployed there, or an operator-owned model that is not loaded.
+    Held,
+    /// Failed less than 30 s ago.
+    Cooldown,
+    /// A peer whose hardware snapshot failed.
+    Unreachable,
+}
+
+/// The class of one host from its hardware report, by the same rules as `score`. A cold host is
+/// `ColdFree` here; the caller decides whether loading it would displace another model.
+fn classify(hw: &Value, model: &str, capability: &str, background: bool) -> HostClass {
+    let Some(worker) = hw["managed_workers"]
+        .as_array()
+        .and_then(|w| w.iter().find(|w| w["model"] == model))
+    else {
+        return HostClass::Held;
+    };
+    let disabled = worker["enabled_capabilities"]
+        .as_array()
+        .is_some_and(|caps| !caps.iter().any(|c| c == capability));
+    if worker["hold_reason"].is_string()
+        || disabled
+        || (worker["external"] == true
+            && worker["external_lifecycle"] != true
+            && worker["state"] != "ready")
+    {
+        return HostClass::Held;
+    }
+    match score(hw, model, capability, background) {
+        Some(value) if value >= WARM_SCORE => HostClass::Warm,
+        Some(_) => HostClass::ColdFree,
+        None if worker["state"] == "ready" || worker["state"] == "loading" => HostClass::Full,
+        None if worker["last_error"].is_object()
+            && worker["idle_seconds"].as_u64().unwrap_or(0) < 30 =>
+        {
+            HostClass::Cooldown
+        }
+        None => HostClass::NoFit,
+    }
+}
+
 /// Rank one host for a request from its hardware report; `None` means it cannot take the request.
 fn score(hw: &Value, model: &str, capability: &str, background: bool) -> Option<u64> {
     let worker = hw["managed_workers"]
@@ -60,7 +131,7 @@ fn score(hw: &Value, model: &str, capability: &str, background: bool) -> Option<
         return None;
     }
     if worker["state"] == "ready" {
-        return Some(1_000_000 + (slots - active) * 100);
+        return Some(WARM_SCORE + (slots - active) * 100);
     }
     if worker["last_error"].is_object() && worker["idle_seconds"].as_u64().unwrap_or(0) < 30 {
         return None;
@@ -85,6 +156,28 @@ fn score(hw: &Value, model: &str, capability: &str, background: bool) -> Option<
         }
     }
     Some(100 + (available - budget - reserve) / (1024 * 1024 * 1024))
+}
+
+/// How far a lease may go to make a model ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadMode {
+    /// Load, evicting idle models when needed (explicit model ids).
+    Normal,
+    /// Load only if that evicts nothing (`auto` on a cold host).
+    NoEvict,
+    /// Never load; serve only a model that is already ready (`auto` on a warm host or a peer).
+    WarmOnly,
+}
+
+impl LoadMode {
+    /// The mode a peer asked for with `x-granite-load`.
+    pub fn from_header(value: Option<&str>) -> Self {
+        match value {
+            Some("warm-only") => Self::WarmOnly,
+            Some("no-evict") => Self::NoEvict,
+            _ => Self::Normal,
+        }
+    }
 }
 
 pub fn failure(code: &str, message: impl Into<String>) -> Failure {
@@ -151,6 +244,8 @@ pub struct Service {
     pub started: Instant,
     /// Requests refused before they ran, by model and error code (`/internal/metrics`).
     pub rejections: Mutex<BTreeMap<String, BTreeMap<String, u64>>>,
+    /// The model each `x-granite-conversation` was served by, for `auto`.
+    pub conversations: Mutex<localfleet_route::Conversations>,
 }
 
 impl Service {
@@ -202,32 +297,13 @@ impl Service {
             .iter()
             .filter(|p| p.models.iter().any(|m| m == model));
         let results = futures_util::future::join_all(peers.map(|peer| async move {
-            let cached = self.peer_hardware.lock().await.get(&peer.id).cloned();
-            match cached {
-                Some((at, Some(hw))) if at.elapsed() < PEER_FRESH => {
-                    return score(&hw, model, capability, background)
-                        .map(|value| (value, Some(peer.clone())));
-                }
-                Some((at, None)) if at.elapsed() < PEER_BACKOFF => return None,
-                _ => {}
-            }
-            let hardware = match self
-                .client
-                .get(format!("{}/internal/hardware", peer.url))
-                .bearer_auth(std::env::var(&peer.token_env).unwrap_or_default())
-                .timeout(Duration::from_secs(3))
-                .send()
-                .await
-            {
-                Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
-                _ => None,
-            };
-            self.peer_hardware
-                .lock()
-                .await
-                .insert(peer.id.clone(), (Instant::now(), hardware.clone()));
-            score(&hardware?, model, capability, background)
-                .map(|value| (value, Some(peer.clone())))
+            score(
+                &self.peer_snapshot(peer).await?,
+                model,
+                capability,
+                background,
+            )
+            .map(|value| (value, Some(peer.clone())))
         }))
         .await;
         candidates.extend(results.into_iter().flatten());
@@ -239,6 +315,82 @@ impl Service {
             ));
         }
         Ok(candidates.into_iter().map(|(_, peer)| peer).collect())
+    }
+
+    /// A peer's hardware report, cached for `PEER_FRESH`; `None` while it is unreachable.
+    async fn peer_snapshot(&self, peer: &crate::config::Peer) -> Option<Value> {
+        let cached = self.peer_hardware.lock().await.get(&peer.id).cloned();
+        match cached {
+            Some((at, hw @ Some(_))) if at.elapsed() < PEER_FRESH => return hw,
+            Some((at, None)) if at.elapsed() < PEER_BACKOFF => return None,
+            _ => {}
+        }
+        let hardware = match self
+            .client
+            .get(format!("{}/internal/hardware", peer.url))
+            .bearer_auth(std::env::var(&peer.token_env).unwrap_or_default())
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
+            _ => None,
+        };
+        self.peer_hardware
+            .lock()
+            .await
+            .insert(peer.id.clone(), (Instant::now(), hardware.clone()));
+        hardware
+    }
+
+    /// Every host of `model` with its class, local first, for `auto`. A local cold host is
+    /// `ColdFree` only when no ready or loading model shares its exclusive accelerator; a peer
+    /// counts only when warm, because its snapshot cannot show what its load would evict.
+    pub async fn auto_hosts(
+        &self,
+        model: &str,
+        capability: &str,
+        background: bool,
+    ) -> Vec<(Option<crate::config::Peer>, HostClass)> {
+        let mut hosts = Vec::new();
+        if let Some(target) = self.workers.get(model) {
+            let mut class = classify(&self.hardware().await, model, capability, background);
+            if class == HostClass::ColdFree && self.would_displace(target) {
+                class = HostClass::WouldDisplace;
+            }
+            hosts.push((None, class));
+        }
+        for peer in self
+            .config
+            .peers
+            .iter()
+            .filter(|p| p.models.iter().any(|m| m == model))
+        {
+            let class = match self.peer_snapshot(peer).await {
+                None => HostClass::Unreachable,
+                Some(hw) => match classify(&hw, model, capability, background) {
+                    HostClass::ColdFree | HostClass::WouldDisplace => HostClass::NoFit,
+                    class => class,
+                },
+            };
+            hosts.push((Some(peer.clone()), class));
+        }
+        hosts
+    }
+
+    /// Whether loading `target` would have to evict: `room()`'s exclusive-accelerator test.
+    /// Models that share one llama.cpp router address (`--models-max 1`) swap inside it, on any
+    /// device, so a ready sibling there counts as exclusive too.
+    fn would_displace(&self, target: &Worker) -> bool {
+        self.workers.values().any(|w| {
+            let exclusive_device = target.spec.device != "cpu"
+                && !target.spec.shared_accelerator
+                && w.spec.device == target.spec.device
+                && !w.spec.shared_accelerator;
+            w.spec.model != target.spec.model
+                && (exclusive_device || w.spec.base_url == target.spec.base_url)
+                && matches!(w.runtime.lock().unwrap().state, "ready" | "loading")
+        })
     }
 
     /// Re-measure local hardware and, when asked, operator-owned native routers. The background
@@ -470,7 +622,7 @@ impl Service {
         Ok(())
     }
 
-    async fn load_worker(&self, worker: &Worker) -> Result<()> {
+    async fn load_worker(&self, worker: &Worker, mode: LoadMode) -> Result<()> {
         if let Some(reason) = &worker.spec.hold_reason {
             return Err(failure("hardware_reserved", reason));
         }
@@ -480,6 +632,12 @@ impl Service {
             let loaded = matches!(worker.runtime.lock().unwrap().state, "loading" | "ready");
             let started = Instant::now();
             if !loaded {
+                if mode == LoadMode::WarmOnly {
+                    return Err(failure(
+                        "model_not_warm",
+                        "auto serves only a loaded model here",
+                    ));
+                }
                 if !worker.spec.external_lifecycle {
                     return Err(failure(
                         "hardware_reserved",
@@ -564,7 +722,7 @@ impl Service {
             }
         }
         Self::verify_worker_artifacts(worker).await?;
-        if self.room(worker).await.is_err() {
+        if mode == LoadMode::Normal && self.room(worker).await.is_err() {
             let mut idle: Vec<_> = self
                 .workers
                 .values()
@@ -789,6 +947,9 @@ impl Service {
     }
 
     fn record_failure(&self, worker: &Worker, err: &Failure) {
+        if is_capacity_refusal(&err.code) {
+            return;
+        }
         let mut rt = worker.runtime.lock().unwrap();
         if rt.state != "ready" {
             rt.state = "failed";
@@ -797,7 +958,12 @@ impl Service {
         rt.last_error = Some(err.clone());
     }
 
-    pub async fn lease(self: &Arc<Self>, model: &str, background: bool) -> Result<Lease> {
+    pub async fn lease(
+        self: &Arc<Self>,
+        model: &str,
+        background: bool,
+        mode: LoadMode,
+    ) -> Result<Lease> {
         let worker = self.workers.get(model).cloned().ok_or_else(|| {
             failure(
                 "model_unavailable",
@@ -846,11 +1012,17 @@ impl Service {
                 _background_permit: background_permit,
             });
         }
+        if mode == LoadMode::WarmOnly && !worker.spec.external {
+            return Err(failure(
+                "model_not_warm",
+                "auto serves only a loaded model here",
+            ));
+        }
         // Detached load ownership survives a disconnected client; process cleanup is explicit.
         let service = self.clone();
         tokio::spawn(async move {
             let _guard = service.lifecycle.lock().await;
-            match service.load_worker(&worker).await {
+            match service.load_worker(&worker, mode).await {
                 Ok(()) => {
                     worker.active.fetch_add(1, Ordering::SeqCst);
                     Ok(Lease {
@@ -915,7 +1087,7 @@ impl Service {
                     Some(service.lifecycle.lock().await)
                 };
                 match op.action.as_str() {
-                    "load" => service.load_worker(&worker).await,
+                    "load" => service.load_worker(&worker, LoadMode::Normal).await,
                     "unload" => service.stop_worker(&worker).await,
                     "prefetch" => {
                         if worker.spec.prefetch_command.is_empty() {
@@ -1289,6 +1461,26 @@ mod tests {
     fn worker(state: &str, active: u64) -> serde_json::Value {
         json!({"model":"m","state":state,"active_requests":active,"max_concurrency":2,
                "reserved_peak_bytes":5000,"device":"cpu","idle_seconds":0})
+    }
+
+    #[test]
+    fn capacity_refusals_are_not_failures() {
+        for code in [
+            "accelerator_busy",
+            "insufficient_memory",
+            "insufficient_vram",
+            "memory_pressure",
+        ] {
+            assert!(super::is_capacity_refusal(code));
+        }
+        for code in [
+            "worker_spawn",
+            "worker_load",
+            "artifact_missing",
+            "worker_exited",
+        ] {
+            assert!(!super::is_capacity_refusal(code));
+        }
     }
 
     #[test]

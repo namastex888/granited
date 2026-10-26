@@ -1,0 +1,13 @@
+[package]
+name = "localfleet-route"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "What LocalFleet runs for `model: \"auto\"`: routing types and the pick order. Where it runs stays in granited's placement."
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+
+[dev-dependencies]
+sha2 = "=0.11.1"

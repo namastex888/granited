@@ -1,106 +1,97 @@
+<p align="center"><img src="docs/how-it-works.svg" alt="Apps send requests to one LocalFleet endpoint, which picks the device and the model, and answers from a Mac, a gaming PC or a mini PC" width="100%"></p>
+
 # LocalFleet
 
-One endpoint for your models, served from the machines you already own. Built around every IBM Granite model family.
+**Private AI that chats, sees, listens and forecasts, on the computers you already own.**
 
-LocalFleet's engine is **granited**, a small Rust agent that runs on each machine. The agent measures the hardware, starts the right native runtime for each Granite model (oMLX on Apple silicon; llama.cpp on Metal, Vulkan, CUDA or CPU; PyTorch workers for embeddings, speech and time series; vLLM for vision), and keeps each model inside the memory it can actually afford. Machines join each other over SSH, and any OpenAI client can talk to the one endpoint they share.
+LocalFleet turns your Mac, gaming PC and mini PC into one AI server. Point any app that speaks the OpenAI API at it, name a model, and LocalFleet runs it on a device with room for it. Nothing leaves your network.
 
-```
-   any OpenAI client, curl, the macOS menu-bar app
-                              │
-                granited (LocalFleet coordinator)    one URL, one key
-            ┌─────────────────┼──────────────────┐
-     this machine        node over SSH        node over SSH
-  oMLX · llama.cpp Metal    llama.cpp · Vulkan    llama.cpp · CUDA
-  embeddings · CPU     speech · TTM · CPU    Switch · vision
-```
+Turn on `auto` in your profile ([example](configs/examples/auto.json)) and you can ask for `"model": "auto"`. LocalFleet then answers with a model that is already loaded, preferring the larger one, or loads one only where that evicts nothing. Effort is off unless you ask for it. Send `x-granite-conversation` to keep a conversation on one model while it stays available. Older nodes in a mixed fleet may still load on their own (see [SECURITY.md](SECURITY.md)).
 
-## Quick start
+- **One URL for every kind of model:** chat and reasoning, vision, speech-to-text, embeddings, forecasting, with text-to-speech in preview.
+- **Every chip you own:** Apple GPUs, NVIDIA, AMD and Intel integrated GPUs, and plain CPUs.
+- **Faster than a proxy:** LocalFleet adds at most 6 ms. LiteLLM adds up to 16 ms more on the same requests ([benchmarks](benchmarks/RESULTS.md)).
+- **Safe by default:** a model loads only if it fits, and no port is opened to your network.
+- **Open source:** Apache-2.0, built around IBM Granite.
+
+## Install
 
 ```sh
-git clone <this repository> localfleet && cd localfleet
-python3 scripts/localfleet.py scan        # what this machine can run; changes nothing
-python3 scripts/localfleet.py install     # shows the plan, asks, then sets everything up
+curl -fsSL https://raw.githubusercontent.com/namastex888/localfleet/dev/install.sh | sh
 ```
 
-`install` fetches pinned runtimes and model files (each checked against a recorded SHA-256), builds the agent, writes a login service (launchd on macOS, a systemd user unit on Linux), and prints the dashboard URL and where your admin key is. On an M5 Pro with warm caches it took 30 s; the first request to a cold model also loads it (about a minute for the embedding worker).
+The installer looks at your hardware, shows what it will run, asks, then sets everything up as a login service. It needs only `git` and `curl`: Python comes from [uv](https://docs.astral.sh/uv/), and every download is checked against a pinned SHA-256. When it finishes, it prints your URL and where your key is.
 
-Add another machine you can reach with `ssh`:
+Add another computer you can reach over SSH. LocalFleet copies itself there, installs, and joins it to the fleet:
 
 ```sh
-python3 scripts/localfleet.py node add user@gpu-box.local
+localfleet node add you@gaming-pc.local
 ```
 
-That scans the machine over SSH, copies this checkout there, installs it with its own plan, opens a supervised SSH link, and enrolls it. Nothing on the node listens on the network. A loopback test of the whole sequence (warm caches) took 35 s, after which the coordinator routed requests to the node.
+On a Mac, `apps/macos/build-app.sh` builds the menu-bar app: live status, models, devices and nodes in a System Settings-style window.
 
-On macOS, `apps/macos/build-app.sh` builds the LocalFleet app: a menu-bar icon with the engine's live state and a System Settings-style Preferences window (models, devices, nodes, connection details, start at login). Headless Linux nodes are managed from it through the coordinator.
+## Use
+
+```sh
+export LOCALFLEET_KEY=$(localfleet key)
+curl http://127.0.0.1:8310/v1/chat/completions \
+  -H "Authorization: Bearer $LOCALFLEET_KEY" -H "Content-Type: application/json" \
+  -d '{"model": "granite-4.2-3b", "reasoning_effort": "off", "temperature": 0, "messages": [{"role": "user", "content": "Summarize this contract in 3 bullets: ..."}]}'
+```
+
+Any OpenAI SDK works: set `base_url` to `http://127.0.0.1:8310/v1`. `auto` works through this URL; a LiteLLM proxy in front knows only its own aliases. Each answer says where it ran, in headers like `x-granite-host`, `x-granite-model-alias` and `server-timing`.
+
+| Endpoint | What it does |
+| --- | --- |
+| `/v1/chat/completions` | Chat and reasoning. `model: "auto"` or a model name; `reasoning_effort` off, low or full; `max_tokens` is the reply, `thinking_budget_tokens` caps thinking |
+| `/v1/embeddings` | Vectors for search and memory. `model: "auto"` uses one pinned model |
+| `/v1/audio/transcriptions` | Speech to text |
+| `/v1/audio/speech` | Text to speech (preview) |
+| `/v1/vision/extract` | Read images and documents |
+| `/v1/forecast` | Time-series forecasting, with quantiles. `model: "auto"` uses one pinned model |
+| `/v1/models` | Every model on every device, and what it can do |
+
+## Speed
+
+| On a MacBook Pro M5 Pro | Result |
+| --- | --- |
+| Overhead of LocalFleet vs. calling the engine directly | **at most 6 ms** |
+| Extra cost of LiteLLM 1.106 on the same requests | 1–16 ms |
+| Granite 4.2 3B, 4 conversations at once | **281 tokens/s** total |
+| First token, short prompt | 23 ms |
+
+All numbers, methods and raw data: [benchmarks/RESULTS.md](benchmarks/RESULTS.md).
 
 ## What runs where
 
-`localfleet scan` decides from measured hardware; it never guesses from a processor name.
+`localfleet scan` decides from measured hardware, never from a chip's name.
 
-| Device | Runtime | Granite models |
+| Device | Engine | Models |
 | --- | --- | --- |
-| Apple silicon | oMLX 0.7.2 with the official ibm-granite MLX builds when oMLX is installed, else llama.cpp Metal (b11669) | Granite 4.2 3B / 8B |
-| NVIDIA GPU (Linux) | llama.cpp CUDA (b11669), vLLM for vision | Granite 4.2 3B / 8B, Switch 4.1 8B, Vision 4.1 4B |
-| AMD or Intel iGPU (Linux, Vulkan driver) | llama.cpp Vulkan (b11669) over shared RAM | Granite 4.2 3B / 8B |
-| Any CPU (macOS arm64, Linux x86_64) | PyTorch native workers | Embedding 97M multilingual, TTM R3 forecasting, Speech 5.0 TurboCTC |
-| AMD XDNA NPU | detected and reported | none yet: no Granite build exists for FastFlowLM/Lemonade |
+| Apple silicon | oMLX or llama.cpp on Metal | Granite 4.2 3B and 8B |
+| NVIDIA GPU | llama.cpp CUDA, vLLM | Granite 4.2, Switch 4.1 8B, Vision 4.1 4B; Fish S2 Pro voices (preview) |
+| AMD or Intel integrated GPU | llama.cpp Vulkan | Granite 4.2 3B and 8B |
+| Any CPU | PyTorch workers | Embedding 97M, TTM R3 forecasting, Speech 5.0 |
+| AMD NPU | detected | none yet: no Granite build for it exists |
 
-Measured so far: Granite 4.2 on M5 Pro Metal and on the Ryzen AI 9 HX 470's Radeon 890M (Vulkan); CPU workers on both; on an RTX 4060 Ti, Vision through vLLM and Switch through an operator-owned llama.cpp b11870. The installer's CUDA path for Granite 4.2 uses the same llama.cpp release but has not been measured yet. Each measurement keeps its raw per-request data, p50/p95/p99 and its limits in the reference deployment's evidence set.
+## How it works
 
-## Why LocalFleet and not …
+- Each computer runs **granited**, a small Rust agent. It measures the hardware and starts the right engine for each model.
+- Requests go to the best device: one with the model already loaded and a free slot first, then one with enough free memory. A device that just filled up hands the request to the next one.
+- Memory budgets come from measured peaks. Idle models unload, and busy ones are never interrupted.
+- Computers talk over SSH tunnels with keys. Nothing listens on your network. See [SECURITY.md](SECURITY.md).
 
-| If you want | Use | What LocalFleet adds |
-| --- | --- | --- |
-| Chat with one model on one Mac | oMLX (LocalFleet can drive it as its Mac engine), LM Studio, Ollama | Non-chat Granite families with typed APIs; several machines as one endpoint |
-| Maximum throughput on a GPU server | vLLM | Mixed fleets (Mac + iGPU box + GPU box) with memory admission across them |
-| A single llama.cpp server | llama.cpp | Lifecycle, idle eviction, provenance headers, families llama.cpp does not serve |
-
-LocalFleet does not pool memory across machines into one big GPU. Each model runs whole on one device; different devices serve different models at the same time.
-
-## API
-
-| Endpoint | Purpose |
-| --- | --- |
-| `POST /v1/chat/completions` | OpenAI chat, JSON or SSE; `reasoning_effort` off / low / full maps to Granite 4.2 template controls |
-| `POST /v1/embeddings` | OpenAI float embeddings |
-| `POST /v1/audio/transcriptions` | Multipart audio, mono, up to 30 s |
-| `POST /v1/forecast` | Typed univariate history → horizon, with native quantiles |
-| `POST /v1/retrieval/rank` | Rank documents with real embedding vectors |
-| `POST /v1/vision/extract` | Image + prompt → text |
-| `POST /v1/systemone` | Granite Switch typed decisions |
-| `GET /v1/models` | Aliases, immutable revisions, capabilities |
-| `GET /admin/models`, `POST /admin/models/{id}/load\|unload\|prefetch` | Lifecycle (admin key) |
-| `GET /internal/hosts`, `/internal/metrics`, `/internal/hardware` | Cluster and hardware state (admin key) |
-
-Every response carries a request ID, the model revision, the serving host and backend build, and `server-timing` for admission and upstream time; GGUF responses add the file's SHA-256. Errors are structured (`unknown_model`, `admission_busy`, `insufficient_memory`, `memory_pressure`, …) and busy or unavailable responses include `Retry-After` (2 s when every slot is full, 30 s for loads and outages) plus `x-granite-error-code`.
-
-## How memory stays safe
-
-- Each deployment declares a memory budget. A cold load starts only if available RAM (or free VRAM) covers the budget plus an OS reserve (8 GiB, or a quarter of RAM on small machines).
-- Cold loads pause while the host is stalling on memory (Linux PSI or macOS memory pressure above 5%); warm models keep serving.
-- Idle models are evicted after their timeout; models with requests in flight are never evicted.
-- Background requests can never take the last slot of a worker.
-
-## Security
-
-Agents bind loopback only; nodes are reached through SSH tunnels. Keys live in `state/secrets/keys.json` (0600). Read [SECURITY.md](SECURITY.md) for the model and its known gaps (no TLS; the coordinator holds node admin keys).
-
-## Development
+## Develop
 
 ```sh
 cargo test --locked && python3 scripts/smoke_stub.py
 ```
 
-`workers/stub.py` stands in for a real worker, so control-plane work needs no models. See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Status
-
-P0/P1 (the families above) are implemented and measured. Guardian, Docling, reranking, geospatial and other TSFM architectures are declared but return structured `unsupported` errors until each has a validated adapter. No accuracy scores are claimed; quality suites and saturation studies are open work. Model cards for every pinned revision are under `reports/model-cards/`.
+`workers/stub.py` stands in for a model, so you can work on the router without downloading anything. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Names
 
-LocalFleet was called granited until 2026-10-26. The engine keeps that name (the `granited` binary, `ai.granited.*` services, `x-granite-*` headers and `GRANITE_*` keys), and `scripts/granitectl.py` still works as an alias of `scripts/localfleet.py`.
+LocalFleet was called granited until 2026-10-26. The engine keeps that name: the `granited` binary, `ai.granited.*` services, `x-granite-*` headers and `GRANITE_*` keys. `scripts/granitectl.py` still works as an alias of `localfleet`.
 
 ## License
 

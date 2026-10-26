@@ -1,0 +1,223 @@
+{
+  "schema_version": 2,
+  "kind": "smoke",
+  "stage": "litellm",
+  "timestamp": "2026-10-25T20:10:12.168659+00:00",
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.12.12 (main, Oct  9 2025, 11:07:00) [Clang 17.0.0 (clang-1700.4.4.1)]",
+  "hostname": "mac",
+  "base_url": "http://127.0.0.1:8300",
+  "fixture": "benchmarks/fixtures/vision-functional.jsonl",
+  "fixture_sha256": "42f867d8332d52bfc0da750c9c47e0a216bd2c55efbed6203721878de7556059",
+  "dataset_manifest": null,
+  "concurrency": 1,
+  "repeat": 30,
+  "warmup": 1,
+  "hardware": {
+    "accelerators": [
+      {
+        "available_memory_bytes": 13006536704,
+        "compute_capability": "8.9",
+        "device_id": "0x280510DE",
+        "driver": "595.84",
+        "memory_kind": "dedicated",
+        "name": "NVIDIA GeForce RTX 4060 Ti",
+        "total_memory_bytes": 17175674880,
+        "uuid": "GPU-276ca46a-8129-2142-677a-e58e31d21e78",
+        "vendor": "nvidia"
+      },
+      {
+        "available_memory_bytes": null,
+        "class": "/sys/class/drm",
+        "device_id": "0x2805",
+        "driver": "../../../../bus/pci/drivers/nvidia",
+        "granite_runtime_validated": false,
+        "node": "card1",
+        "total_memory_bytes": null,
+        "vendor_pci_id": "0x10de"
+      }
+    ],
+    "active_model_process_columns": [
+      "pid",
+      "resident_kib",
+      "executable"
+    ],
+    "active_model_processes": [
+      " 583592 24452 python3",
+      " 816177 23272 python3",
+      "1231362 22568 python3",
+      "1740656 201880 llama-server",
+      "1741975 9058220 llama-server",
+      "1842306 11384 python3",
+      "1857964 180416 llama-server",
+      "2005813 392584 python3.13",
+      "2151706  6792 python3",
+      "2151707  7300 python3",
+      "2584210  3144 python3",
+      "2586705  3396 python3",
+      "2827087 23228 python3",
+      "3083783 22252 python3",
+      "3131011 22484 python3",
+      "3269402 21960 python3",
+      "3277737 15748 python3",
+      "3296254 15452 granited",
+      "3454192 350460 python3",
+      "3469015 22884 python3",
+      "3834711 85988 python3",
+      "3834973  3036 python3",
+      "3909049 22672 python3"
+    ],
+    "architecture": "x86_64",
+    "cpu_brand": "AMD Ryzen 9 5950X 16-Core Processor",
+    "disks": [
+      {
+        "available_bytes": 98077048832,
+        "mount": "/",
+        "total_bytes": 233959739392
+      },
+      {
+        "available_bytes": 1065017344,
+        "mount": "/boot/efi",
+        "total_bytes": 1071624192
+      },
+      {
+        "available_bytes": 0,
+        "mount": "/var/lib/incus-lxcfs",
+        "total_bytes": 0
+      },
+      {
+        "available_bytes": 0,
+        "mount": "/var/lib/lxcfs",
+        "total_bytes": 0
+      },
+      {
+        "available_bytes": 1347578269696,
+        "mount": "/var/lib/incus/storage-pools/samsung",
+        "total_bytes": 2000376823808
+      },
+      {
+        "available_bytes": 1347578269696,
+        "mount": "/mnt/ai",
+        "total_bytes": 2000376823808
+      },
+      {
+        "available_bytes": 0,
+        "mount": "/var/lib/docker/rootfs/overlayfs/b03fec8a9321ab821427ad1c056240da577a1836a7b58e7ae908b3095b7dc71e",
+        "total_bytes": 0
+      },
+      {
+        "available_bytes": 0,
+        "mount": "/var/lib/docker/rootfs/overlayfs/05de7efd2bf4842bd4908f448d3135e664a5a0248a6d570dc4e669b42abe2c55",
+        "total_bytes": 0
+      }
+    ],
+    "host_id": "cuda",
+    "hostname": "ryzen",
+    "issues": [],
+    "kernel": "7.0.0-30-generic",
+    "load_average": {
+      "fifteen": 2.86,
+      "five": 2.71,
+      "one": 2.5
+    },
+    "logical_cpus": 32,
+    "managed_workers": [
+      {
+        "active_requests": 0,
+        "backend": "embedding_native",
+        "device": "cpu",
+        "hold_reason": null,
+        "idle_seconds": 653,
+        "last_error": null,
+        "load_ms": null,
+        "memory_budget_kind": "configured_conservative_bound",
+        "model": "granite-embedding-97m-multilingual-r2",
+        "pid": null,
+        "reserved_peak_bytes": 2147483648,
+        "revision": "835ad14087e140460703cf0fae09f97d469d65c2",
+        "state": "unloaded",
+        "unload_ms": null
+      },
+      {
+        "active_requests": 0,
+        "backend": "speech_native",
+        "device": "cpu",
+        "hold_reason": null,
+        "idle_seconds": 653,
+        "last_error": null,
+        "load_ms": null,
+        "memory_budget_kind": "configured_conservative_bound",
+        "model": "granite-speech-5.0-470m-turboctc",
+        "pid": null,
+        "reserved_peak_bytes": 4294967296,
+        "revision": "1dd23f46f6d4e6eae2531982ba2e33220086dd97",
+        "state": "unloaded",
+        "unload_ms": null
+      },
+      {
+        "active_requests": 0,
+        "backend": "timeseries_native",
+        "device": "cpu",
+        "hold_reason": null,
+        "idle_seconds": 653,
+        "last_error": null,
+        "load_ms": null,
+        "memory_budget_kind": "configured_conservative_bound",
+        "model": "granite-timeseries-ttm-r3",
+        "pid": null,
+        "reserved_peak_bytes": 2147483648,
+        "revision": "ea17cfd2e3edcaea21eb8dcecd18bf88971482fa",
+        "state": "unloaded",
+        "unload_ms": null
+      },
+      {
+        "active_requests": 0,
+        "backend": "vllm",
+        "device": "cuda",
+        "hold_reason": "GPU currently owned by another lane; native loads require an agreed handover window.",
+        "idle_seconds": 653,
+        "last_error": null,
+        "load_ms": null,
+        "memory_budget_kind": "configured_conservative_bound",
+        "model": "granite-vision-4.1-4b",
+        "pid": null,
+        "reserved_peak_bytes": 12884901888,
+        "revision": "37d591f06319e8f1638b5adcf58bdf50e0f84f7a",
+        "state": "unloaded",
+        "unload_ms": null
+      }
+    ],
+    "memory_pressure": null,
+    "network_interfaces": "redacted",
+    "observed_unix_ms": 1792956379440,
+    "os": "Linux (Ubuntu 26.04)",
+    "physical_cores": 16,
+    "ram": {
+      "available_bytes": 77851054080,
+      "swap_total_bytes": 4294963200,
+      "swap_used_bytes": 4294201344,
+      "total_bytes": 130395140096
+    },
+    "runtime_versions": {
+      "llama_cpp": null,
+      "nvidia_smi": "595.84"
+    },
+    "schema_version": 1
+  },
+  "summary": {
+    "total": 30,
+    "successful": 30,
+    "failed": 0,
+    "wall_seconds": 5.879262750007911,
+    "achieved_requests_per_second": 5.102680603951513,
+    "throughput_kind": "achieved at configured concurrency; not a saturation claim",
+    "latency_p50_s": 0.191531041986309,
+    "latency_p95_s": 0.19411504198797047,
+    "latency_p99_s": 0.33242720799171366,
+    "mean_latency_95ci_s": [
+      0.1902962445000109,
+      0.20576827773378076
+    ],
+    "model_accuracy": null
+  }
+}

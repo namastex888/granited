@@ -2,6 +2,7 @@
 """Deterministic stand-in worker for tests and development. It loads no model and serves no real inference."""
 import argparse
 import hashlib
+import json
 import math
 import time
 
@@ -40,6 +41,17 @@ class Stub:
         if path == '/v1/forecast':
             history = data['history']
             return dict(model=self.args.model, forecast=[history[-1]] * int(data.get('horizon', 1)))
+        if path == '/v1/chat/completions' and self.args.family == 'language':
+            text = ' '.join(str(m.get('content', '')) for m in data.get('messages', []))
+            if 'SLOW' in text:
+                time.sleep(2)
+            # Echo what reached the engine, so tests can check effort, budget and sampling.
+            seen = dict(model=data['model'], temperature=data.get('temperature'), max_tokens=data.get('max_tokens'),
+                        thinking_budget_tokens=data.get('thinking_budget_tokens'),
+                        chat_template_kwargs=data.get('chat_template_kwargs'))
+            return dict(object='chat.completion', model=self.args.model,
+                        choices=[dict(index=0, finish_reason='stop', message=dict(role='assistant', content=json.dumps(seen)))],
+                        usage=dict(prompt_tokens=1, completion_tokens=1, total_tokens=2))
         raise Unsupported(f'Stub does not implement {path}')
 
 
@@ -48,7 +60,7 @@ def main():
     p.add_argument('--model', required=True)
     p.add_argument('--repo', default='stub')
     p.add_argument('--revision', required=True)
-    p.add_argument('--family', choices=['embedding', 'timeseries'], default='embedding')
+    p.add_argument('--family', choices=['embedding', 'timeseries', 'language'], default='embedding')
     p.add_argument('--host', default='127.0.0.1', choices=['127.0.0.1'])
     p.add_argument('--port', type=int, required=True)
     p.add_argument('--delay-ms', type=int, default=0)

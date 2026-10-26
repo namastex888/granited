@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 330" width="880" height="330" role="img" aria-labelledby="t d">
+  <title id="t">How LocalFleet works</title>
+  <desc id="d">Apps send every request to one local LocalFleet endpoint. LocalFleet picks the device and the model, and the answer comes back from a Mac, a gaming PC or a mini PC.</desc>
+  <style>
+    :root { --bg:#ffffff; --card:#f4f5f7; --line:#c9ced6; --ink:#1d2330; --muted:#5b6474; --hub:#1f6feb; --hubink:#ffffff;
+            --a:#1f9d55; --b:#d9480f; --c:#7048e8; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --ink:#e6edf3; --muted:#9aa4b2; --hub:#2f81f7; --hubink:#ffffff;
+              --a:#3fb950; --b:#f0883e; --c:#a371f7; }
+    }
+    .bg { fill: var(--bg); }
+    .card { fill: var(--card); stroke: var(--line); stroke-width: 1.2; }
+    .hub { fill: var(--hub); }
+    .wire { stroke: var(--line); stroke-width: 2; fill: none; stroke-dasharray: 5 6; }
+    .t { font: 600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--ink); }
+    .s { font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--muted); }
+    .h { font: 700 19px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--hubink); }
+    .hs { font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--hubink); opacity: .9; }
+    .pick { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--hubink); }
+    .a { fill: var(--a); } .b { fill: var(--b); } .c { fill: var(--c); }
+    .ra { stroke: var(--a); } .rb { stroke: var(--b); } .rc { stroke: var(--c); }
+    .ring { fill: none; stroke-width: 2.5; opacity: 0; }
+  </style>
+  <rect class="bg" width="880" height="330" rx="14"/>
+
+  <!-- wires -->
+  <path class="wire" d="M 200 75 C 260 75, 270 165, 330 165"/>
+  <path class="wire" d="M 200 165 L 330 165"/>
+  <path class="wire" d="M 200 255 C 260 255, 270 165, 330 165"/>
+  <path class="wire" d="M 550 165 C 610 165, 620 75, 680 75"/>
+  <path class="wire" d="M 550 165 L 680 165"/>
+  <path class="wire" d="M 550 165 C 610 165, 620 255, 680 255"/>
+
+  <!-- apps -->
+  <rect class="card" x="20" y="45" width="180" height="60" rx="10"/>
+  <text class="t" x="36" y="71">Chat app</text><text class="s" x="36" y="90">"explain this contract"</text>
+  <rect class="card" x="20" y="135" width="180" height="60" rx="10"/>
+  <text class="t" x="36" y="161">Voice assistant</text><text class="s" x="36" y="180">speech in, speech out</text>
+  <rect class="card" x="20" y="225" width="180" height="60" rx="10"/>
+  <text class="t" x="36" y="251">Search &amp; agents</text><text class="s" x="36" y="270">embeddings · forecasts</text>
+
+  <!-- hub -->
+  <rect class="hub" x="330" y="95" width="220" height="140" rx="16"/>
+  <text class="h" x="440" y="130" text-anchor="middle">LocalFleet</text>
+  <text class="hs" x="440" y="150" text-anchor="middle">one URL · one key · OpenAI API</text>
+  <text class="pick" x="440" y="182" text-anchor="middle">
+    <tspan>picks device · model</tspan>
+  </text>
+  <text class="pick" x="440" y="206" text-anchor="middle" opacity="0">
+    chat: 8B → Mac
+    <animate attributeName="opacity" values="0;1;1;0;0" keyTimes="0;.08;.28;.33;1" dur="9s" repeatCount="indefinite"/>
+  </text>
+  <text class="pick" x="440" y="206" text-anchor="middle" opacity="0">
+    speech + voice → Gaming PC
+    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;.33;.41;.61;.66;1" dur="9s" repeatCount="indefinite"/>
+  </text>
+  <text class="pick" x="440" y="206" text-anchor="middle" opacity="0">
+    embeddings → Mini PC
+    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;.66;.74;.94;1" dur="9s" repeatCount="indefinite"/>
+  </text>
+
+  <!-- devices -->
+  <rect class="card" x="680" y="45" width="180" height="60" rx="10"/>
+  <text class="t" x="696" y="71">MacBook</text><text class="s" x="696" y="90">Apple GPU · Granite 3B / 8B</text>
+  <rect class="ring ra" x="676" y="41" width="188" height="68" rx="12">
+    <animate attributeName="opacity" values="0;0;1;0;0" keyTimes="0;.18;.22;.32;1" dur="9s" repeatCount="indefinite"/>
+  </rect>
+  <rect class="card" x="680" y="135" width="180" height="60" rx="10"/>
+  <text class="t" x="696" y="161">Gaming PC</text><text class="s" x="696" y="180">NVIDIA · speech · voices</text>
+  <rect class="ring rb" x="676" y="131" width="188" height="68" rx="12">
+    <animate attributeName="opacity" values="0;0;1;0;0" keyTimes="0;.51;.55;.65;1" dur="9s" repeatCount="indefinite"/>
+  </rect>
+  <rect class="card" x="680" y="225" width="180" height="60" rx="10"/>
+  <text class="t" x="696" y="251">Mini PC</text><text class="s" x="696" y="270">iGPU · CPU · embeddings</text>
+  <rect class="ring rc" x="676" y="221" width="188" height="68" rx="12">
+    <animate attributeName="opacity" values="0;0;1;0;0" keyTimes="0;.84;.88;.98;1" dur="9s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- requests: out and back, one per third of the loop -->
+  <circle class="a" r="7" opacity="0">
+    <animateMotion dur="9s" repeatCount="indefinite" keyPoints="0;1;1;0;0" keyTimes="0;.2;.22;.33;1" calcMode="linear"
+      path="M 200 75 C 260 75, 270 165, 330 165 L 550 165 C 610 165, 620 75, 680 75"/>
+    <animate attributeName="opacity" values="1;1;1;0;0" keyTimes="0;.2;.32;.33;1" dur="9s" repeatCount="indefinite"/>
+  </circle>
+  <circle class="b" r="7" opacity="0">
+    <animateMotion dur="9s" repeatCount="indefinite" keyPoints="0;0;1;1;0;0" keyTimes="0;.33;.53;.55;.66;1" calcMode="linear"
+      path="M 200 165 L 550 165 L 680 165"/>
+    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;.329;.33;.65;.66;1" dur="9s" repeatCount="indefinite"/>
+  </circle>
+  <circle class="c" r="7" opacity="0">
+    <animateMotion dur="9s" repeatCount="indefinite" keyPoints="0;0;1;1;0" keyTimes="0;.66;.86;.88;1" calcMode="linear"
+      path="M 200 255 C 260 255, 270 165, 330 165 L 550 165 C 610 165, 620 255, 680 255"/>
+    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;.659;.66;.99;1" dur="9s" repeatCount="indefinite"/>
+  </circle>
+
+  <text class="s" x="440" y="312" text-anchor="middle">Nothing leaves your machines. Every device does what it is best at.</text>
+</svg>

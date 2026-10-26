@@ -7,6 +7,7 @@ machine over SSH, without manual steps.
   localfleet node add HOST [--yes]      ship this checkout to HOST, install it there, link and enroll it
   localfleet node list | node remove NAME
   localfleet service status|start|stop|restart|logs
+  localfleet key [--admin]              print the API key, e.g. export LOCALFLEET_KEY=$(localfleet key)
   localfleet uninstall                  stop and remove the services; files stay
 
 Every download is pinned: llama.cpp archives and model files are verified against SHA-256 values
@@ -529,7 +530,7 @@ def node_add(args):
     if not args.yes and input(f'\ninstall on {args.target} and enroll it as "{name}"? [y/N] ').strip().lower() != 'y':
         raise SystemExit('cancelled')
     ship(args.target, args.remote_dir, args.jump)
-    remote = (f'cd {shlex.quote(args.remote_dir)} && python3 scripts/localfleet.py install --yes '
+    remote = (f'cd {shlex.quote(args.remote_dir)} && sh install.sh --yes '
               f'--instance {shlex.quote(args.remote_instance)} --port {port} --host-id {shlex.quote(name)} '
               f'--languages {shlex.quote(args.languages)} --native {shlex.quote(args.native)}'
               + (' --no-service' if args.no_service else ''))
@@ -685,6 +686,14 @@ def uninstall(args):
     say('services removed; delete this directory to remove models, keys and environments')
 
 
+def key(args):
+    """Print this installation's API key (or admin key) for scripts: export LOCALFLEET_KEY=$(localfleet key)."""
+    keys = load_json(KEYS)
+    if not keys:
+        raise SystemExit('no keys yet: run localfleet install first')
+    print(keys['GRANITE_ADMIN_KEY' if args.admin else 'GRANITE_API_KEY'])
+
+
 def service(args):
     record = load_json(RECORD)
     if not record:
@@ -713,6 +722,9 @@ def service(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
+    k = sub.add_parser('key', help='print the API key (--admin: the admin key)')
+    k.add_argument('--admin', action='store_true')
+    k.set_defaults(func=key)
     s = sub.add_parser('scan')
     s.add_argument('--ssh', help='probe this SSH host instead of the local machine')
     s.add_argument('--json', action='store_true')

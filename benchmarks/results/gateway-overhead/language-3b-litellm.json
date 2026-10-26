@@ -1,0 +1,160 @@
+{
+  "schema_version": 2,
+  "kind": "smoke",
+  "stage": "litellm",
+  "timestamp": "2026-10-25T19:43:37.832387+00:00",
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.12.12 (main, Oct  9 2025, 11:07:00) [Clang 17.0.0 (clang-1700.4.4.1)]",
+  "hostname": "mac",
+  "base_url": "http://127.0.0.1:8300",
+  "fixture": "benchmarks/fixtures/language-3b-functional.jsonl",
+  "fixture_sha256": "0f6dfff7276315ebe340202c8801d06027c111c162985a1d63ae3a601653fe4d",
+  "dataset_manifest": null,
+  "concurrency": 1,
+  "repeat": 30,
+  "warmup": 1,
+  "hardware": {
+    "accelerators": [
+      {
+        "available_memory_bytes": null,
+        "cores": "20",
+        "device_id": null,
+        "memory_kind": "unified",
+        "metal_family": "spdisplays_metal4",
+        "name": "Apple M5 Pro",
+        "note": "Unified system RAM is not guaranteed accelerator capacity.",
+        "total_memory_bytes": null,
+        "vendor": "apple"
+      }
+    ],
+    "active_model_process_columns": [
+      "pid",
+      "resident_kib",
+      "executable"
+    ],
+    "active_model_processes": [
+      " 2009 1841072 ~/.local/share/uv/tools/arize-phoenix/bin/python",
+      " 2495   8496 /opt/homebrew/Cellar/python@3.12/3.12.12/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+      " 7608   7072 /opt/homebrew/Cellar/python@3.12/3.12.12/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+      "18297  30112 /opt/homebrew/Cellar/python@3.12/3.12.12/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+      "19267  30448 /opt/homebrew/Cellar/python@3.12/3.12.12/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+      "23294  18288 ~/workspace/repos/granited/target/debug/granited",
+      "24273  28400 /opt/homebrew/Cellar/python@3.12/3.12.12/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+      "49849  51728 omlx-server",
+      "84581   7824 /opt/homebrew/Cellar/python@3.12/3.12.12/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
+    ],
+    "architecture": "aarch64",
+    "cpu_brand": "Apple M5 Pro",
+    "disks": [
+      {
+        "available_bytes": 57474940992,
+        "mount": "/",
+        "total_bytes": 994610155520
+      },
+      {
+        "available_bytes": 57474940992,
+        "mount": "/System/Volumes/Data",
+        "total_bytes": 994610155520
+      },
+      {
+        "available_bytes": 17825792,
+        "mount": "/Volumes/Omni 2.261023.8",
+        "total_bytes": 1316425728
+      },
+      {
+        "available_bytes": 17825792,
+        "mount": "/Volumes/Omni 2.261023.8 1",
+        "total_bytes": 1316425728
+      },
+      {
+        "available_bytes": 521158656,
+        "mount": "/Volumes/oMLX",
+        "total_bytes": 2352099328
+      },
+      {
+        "available_bytes": 54525952,
+        "mount": "/Volumes/RTH",
+        "total_bytes": 1130209280
+      },
+      {
+        "available_bytes": 17563648,
+        "mount": "/Volumes/Automagik 3.12.0",
+        "total_bytes": 1329217536
+      }
+    ],
+    "host_id": "mac",
+    "hostname": "mac",
+    "issues": [],
+    "kernel": "25.5.0",
+    "load_average": {
+      "fifteen": 14.94677734375,
+      "five": 13.3134765625,
+      "one": 13.595703125
+    },
+    "logical_cpus": 18,
+    "managed_workers": [
+      {
+        "active_requests": 0,
+        "backend": "llama_cpp",
+        "device": "unified",
+        "idle_seconds": 6,
+        "last_error": null,
+        "load_ms": null,
+        "memory_budget_kind": "configured_conservative_bound",
+        "model": "granite-4.2-3b",
+        "pid": null,
+        "reserved_peak_bytes": 5368709120,
+        "revision": "c40945d71cd90f249a56985e8155551a9188dc30",
+        "state": "unloaded",
+        "unload_ms": null
+      },
+      {
+        "active_requests": 0,
+        "backend": "llama_cpp",
+        "device": "unified",
+        "idle_seconds": 6,
+        "last_error": null,
+        "load_ms": null,
+        "memory_budget_kind": "configured_conservative_bound",
+        "model": "granite-4.2-8b",
+        "pid": null,
+        "reserved_peak_bytes": 9663676416,
+        "revision": "93f3f6a8938ee922b784cf4e5b4203cd3428df8f",
+        "state": "unloaded",
+        "unload_ms": null
+      }
+    ],
+    "memory_pressure": "The system has 51539607552 (3145728 pages with a page size of 16384).\nSystem-wide memory free percentage: 63%",
+    "network_interfaces": "redacted",
+    "observed_unix_ms": 1792954649738,
+    "os": "macOS 26.5.2",
+    "physical_cores": 18,
+    "ram": {
+      "available_bytes": 32323764224,
+      "swap_total_bytes": 33285996544,
+      "swap_used_bytes": 31906922496,
+      "total_bytes": 51539607552
+    },
+    "runtime_versions": {
+      "llama_cpp": "",
+      "nvidia_smi": null
+    },
+    "schema_version": 1
+  },
+  "summary": {
+    "total": 90,
+    "successful": 90,
+    "failed": 0,
+    "wall_seconds": 30.241520292009227,
+    "achieved_requests_per_second": 2.9760408580973645,
+    "throughput_kind": "achieved at configured concurrency; not a saturation claim",
+    "latency_p50_s": 0.1269773329840973,
+    "latency_p95_s": 0.8813493339985143,
+    "latency_p99_s": 0.8991738749900833,
+    "mean_latency_95ci_s": [
+      0.2620612630135535,
+      0.41098043005654794
+    ],
+    "model_accuracy": null
+  }
+}

@@ -95,6 +95,69 @@ pub struct Config {
     pub deployments: Vec<Deployment>,
     #[serde(default)]
     pub peers: Vec<Peer>,
+    #[serde(default)]
+    pub auto: Auto,
+}
+
+/// `model: "auto"`, off unless a profile turns it on. `prefer` lists models per capability, best
+/// first. Embeddings and forecast always use their first entry, so vectors never mix models.
+#[derive(Clone, Default, Deserialize)]
+pub struct Auto {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub prefer: BTreeMap<String, Vec<String>>,
+}
+
+/// The capabilities `auto` serves; every other endpoint answers `unsupported_auto`.
+pub const AUTO_CAPABILITIES: [&str; 3] = ["chat", "embeddings", "forecast"];
+const MAX_AUTO_ID: usize = 64;
+
+/// `auto` is reserved, and every preference must name a registered model of the right kind.
+fn validate_auto(config: &Config, registry: &Registry) -> Result<(), String> {
+    let reserved = |id: &str| id == "auto";
+    if registry.models.iter().any(|m| {
+        reserved(&m.id)
+            || m.metadata
+                .get("aliases")
+                .and_then(Value::as_array)
+                .is_some_and(|a| a.iter().any(|a| a.as_str().is_some_and(reserved)))
+    }) || config
+        .peers
+        .iter()
+        .any(|p| p.models.iter().any(|m| reserved(m)))
+    {
+        return Err("`auto` is reserved and cannot name a model, alias or peer model".into());
+    }
+    for (capability, ids) in &config.auto.prefer {
+        if !AUTO_CAPABILITIES.contains(&capability.as_str()) {
+            return Err(format!(
+                "auto.prefer.{capability}: auto serves only chat, embeddings and forecast"
+            ));
+        }
+        if ids.is_empty() {
+            return Err(format!("auto.prefer.{capability} is empty"));
+        }
+        for id in ids {
+            let model = registry
+                .models
+                .iter()
+                .find(|m| &m.id == id && id.len() <= MAX_AUTO_ID)
+                .ok_or(format!(
+                    "auto.prefer.{capability}: {id} is not a registered model id"
+                ))?;
+            if !model.capabilities.contains(capability)
+                || (capability == "chat" && model.family != "language")
+                || (capability == "forecast"
+                    && model.metadata.get("license") != Some(&Value::from("apache-2.0")))
+            {
+                return Err(format!(
+                    "auto.prefer.{capability}: {id} must declare {capability} (chat: family language; forecast: Apache-2.0)"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn immutable(revision: &str) -> bool {
@@ -176,6 +239,18 @@ impl Config {
                 return Err(format!("missing peer token environment {}", peer.token_env).into());
             }
         }
+        validate_auto(&config, &registry)?;
+        // The 3B temperature rule lives in the registry; an older registry would silently drop it.
+        if registry.models.iter().any(|m| {
+            m.id == "granite-4.2-3b"
+                && m.metadata.get("off_requires_temperature_zero") != Some(&Value::Bool(true))
+        }) {
+            return Err(format!(
+                "{} predates off_requires_temperature_zero on granite-4.2-3b; use this checkout's configs/registry.json",
+                config.registry
+            )
+            .into());
+        }
         for key in [&config.api_key_env, &config.admin_key_env] {
             if std::env::var(key).unwrap_or_default().len() < 24 {
                 return Err(format!("{key} must contain at least 24 characters").into());
@@ -187,6 +262,79 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use super::{Config, Registry, validate_auto};
+    use serde_json::json;
+
+    fn fleet(prefer: serde_json::Value, peer_models: &[&str]) -> (Config, Registry) {
+        let config = serde_json::from_value(json!({"listen":"127.0.0.1:0","host_id":"h","registry":"r",
+            "state_dir":"s","api_key_env":"A","admin_key_env":"B","ram_reserve_bytes":0,
+            "accelerator_reserve_bytes":0,"peers":[{"id":"p","url":"http://x","token_env":"T","models":peer_models}],
+            "auto":{"enabled":true,"prefer":prefer}}))
+        .unwrap();
+        let model = |id: &str, family: &str, caps: &[&str], license: &str| json!({"id":id,"hf_repo":"r","family":family,"capabilities":caps,"idle_timeout_seconds":1,"license":license});
+        let registry = serde_json::from_value(json!({"models":[
+            model("granite-4.2-8b", "language", &["chat"], "apache-2.0"),
+            model("granite-vision-4.1-4b", "vision", &["chat", "vision"], "apache-2.0"),
+            model("granite-embedding-97m-multilingual-r2", "embedding", &["embeddings"], "apache-2.0"),
+            model("granite-timeseries-patchtst-fm-r2", "time_series", &["forecast"], "openmdw-1.0")]}))
+        .unwrap();
+        (config, registry)
+    }
+
+    #[test]
+    fn auto_preferences_are_validated_and_auto_is_reserved() {
+        let ok = fleet(
+            json!({"chat":["granite-4.2-8b"],"embeddings":["granite-embedding-97m-multilingual-r2"]}),
+            &[],
+        );
+        assert!(validate_auto(&ok.0, &ok.1).is_ok());
+        for bad in [
+            json!({"chat":["granite-vision-4.1-4b"]}),
+            json!({"embeddings":["granite-4.2-8b"]}),
+            json!({"forecast":["granite-timeseries-patchtst-fm-r2"]}),
+            json!({"vision":["granite-vision-4.1-4b"]}),
+            json!({"chat":[]}),
+            json!({"chat":["granite-unknown"]}),
+        ] {
+            let (config, registry) = fleet(bad.clone(), &[]);
+            assert!(validate_auto(&config, &registry).is_err(), "{bad}");
+        }
+        let (config, registry) = fleet(json!({}), &["auto"]);
+        assert!(validate_auto(&config, &registry).is_err());
+    }
+
+    #[test]
+    fn profiles_load_with_auto_off_except_the_auto_example() {
+        for entry in std::fs::read_dir("configs")
+            .unwrap()
+            .chain(std::fs::read_dir("configs/examples").unwrap())
+        {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "json")
+                && path.file_name().unwrap() != "registry.json"
+            {
+                let value: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                if value.get("listen").is_some() {
+                    let config: Config = serde_json::from_value(value).unwrap();
+                    if path.file_name().unwrap() == "auto.json" {
+                        let registry: Registry =
+                            serde_json::from_slice(&std::fs::read(&config.registry).unwrap())
+                                .unwrap();
+                        assert!(config.auto.enabled && validate_auto(&config, &registry).is_ok());
+                        assert_eq!(
+                            config.auto.prefer.len(),
+                            3,
+                            "the README gate reads this profile"
+                        );
+                    } else {
+                        assert!(!config.auto.enabled, "{}", path.display());
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn only_full_commit_hashes_are_immutable() {
         assert!(super::immutable("835ad14087e140460703cf0fae09f97d469d65c2"));

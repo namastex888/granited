@@ -1,0 +1,17 @@
+Peak phys_footprint of the engine process under load, sampled every second with `footprint -p`.
+Short = 8 prompts of ~30 tokens, 256 output tokens. Long = 4 prompts of ~6,200 tokens (3B: also ~6,700), up to 600 output tokens.
+llama.cpp maps its weights from the GGUF file; phys_footprint leaves those 2.24 GB (3B) out, so add them.
+The first llama.cpp sample (107 MB / 54 MB) read the router process, not the model child; it is superseded below.
+
+llama.cpp 3B, short, 2 slots: 1663 MB (+2.24 GB mapped weights)
+llama.cpp 3B, short, 4 slots: 3023 MB (+2.24 GB mapped weights)
+oMLX 3B, short, 2 slots: 2503 MB
+oMLX 3B, short, 4 slots: 2646 MB
+oMLX 3B, long ~6.2k, 1 concurrent: 3403 MB
+oMLX 3B, long ~6.2k, 2 concurrent: 5071 MB
+oMLX 3B, long ~6.2k, 4 concurrent: 8992 MB
+oMLX 3B, long ~6.7k, 2 concurrent: 4615 MB
+oMLX 8B, long ~6.2k, 1 concurrent: 8276 MB
+oMLX 8B, long ~6.2k, 2 concurrent: 10240 MB
+llama.cpp 8B, short, 2 slots: 3106 MB (+5.35 GB mapped weights)
+llama.cpp 8B, short, 4 slots: 5896 MB (+5.35 GB mapped weights)

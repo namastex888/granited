@@ -1,6 +1,6 @@
 use crate::{
     contracts,
-    lifecycle::{Failure, Service, failure},
+    lifecycle::{Failure, HostClass, LoadMode, Service, failure},
 };
 use axum::{
     Json, Router,
@@ -26,7 +26,10 @@ impl IntoResponse for Failure {
     fn into_response(self) -> Response {
         let status = match self.code.as_str() {
             "unknown_model" | "unknown_operation" | "route_not_found" => StatusCode::NOT_FOUND,
-            "invalid_schema" | "invalid_operation" => StatusCode::BAD_REQUEST,
+            "invalid_schema"
+            | "invalid_operation"
+            | "auto_not_forwardable"
+            | "unsupported_auto" => StatusCode::BAD_REQUEST,
             "unauthorized" => StatusCode::UNAUTHORIZED,
             "unsupported_capability" | "unsupported_model" | "prefetch_unsupported" => {
                 StatusCode::NOT_IMPLEMENTED
@@ -104,6 +107,11 @@ async fn guard(State(service): State<Arc<Service>>, mut request: Request, next: 
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE | StatusCode::TOO_MANY_REQUESTS
     ) && !response.headers().contains_key("retry-after")
+        && response
+            .headers()
+            .get("x-granite-error-code")
+            .map(|v| v.as_bytes())
+            != Some(b"auto_unavailable")
     {
         response
             .headers_mut()
@@ -172,9 +180,295 @@ pub fn router(service: Arc<Service>) -> Router {
 }
 
 async fn models(State(s): State<Arc<Service>>) -> Json<Value> {
-    Json(
-        json!({"object":"list","data":s.models.values().map(|m|json!({"id":m.id,"object":"model","created":0,"owned_by":"ibm-granite","revision":m.hf_revision,"family":m.family,"capabilities":m.capabilities,"deployment_configured":s.workers.contains_key(&m.id)||s.config.peers.iter().any(|p|p.models.contains(&m.id))})).collect::<Vec<_>>()}),
+    let mut data = s.models.values().map(|m|json!({"id":m.id,"object":"model","created":0,"owned_by":"ibm-granite","revision":m.hf_revision,"family":m.family,"capabilities":m.capabilities,"deployment_configured":s.workers.contains_key(&m.id)||s.config.peers.iter().any(|p|p.models.contains(&m.id))})).collect::<Vec<_>>();
+    let auto = auto_capabilities(&s);
+    if !auto.is_empty() {
+        data.insert(0, json!({"id":"auto","object":"model","created":0,"owned_by":"localfleet","family":"auto","capabilities":auto,"deployment_configured":true}));
+    }
+    Json(json!({"object":"list","data":data}))
+}
+
+/// The capabilities this profile resolves `auto` for.
+fn auto_capabilities(s: &Service) -> Vec<&'static str> {
+    crate::config::AUTO_CAPABILITIES
+        .into_iter()
+        .filter(|c| s.config.auto.enabled && s.config.auto.prefer.contains_key(*c))
+        .collect()
+}
+
+fn off_requires_t0(model: &crate::config::Model) -> bool {
+    model.metadata.get("off_requires_temperature_zero") == Some(&Value::Bool(true))
+}
+
+/// The refusals after which `auto` may try its next host: the request never ran there.
+const AUTO_REFUSALS: [&str; 9] = [
+    "admission_busy",
+    "capacity_unavailable",
+    "model_not_warm",
+    "accelerator_busy",
+    "insufficient_memory",
+    "insufficient_vram",
+    "memory_pressure",
+    "load_cooldown",
+    "model_loading",
+];
+
+fn auto_refusal(response: &Response) -> Option<String> {
+    if !matches!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE | StatusCode::TOO_MANY_REQUESTS
+    ) {
+        return None;
+    }
+    let code = response
+        .headers()
+        .get("x-granite-error-code")
+        .and_then(|v| v.to_str().ok());
+    match code {
+        Some(code) if AUTO_REFUSALS.contains(&code) => Some(code.to_owned()),
+        None if response.status() == StatusCode::TOO_MANY_REQUESTS => Some("admission_busy".into()),
+        _ => None,
+    }
+}
+
+/// `auto`'s effort, written into the body so `normalize_chat` sees one explicit choice: the
+/// client's own wins; a thinking budget alone means full; otherwise off. Then the one clamp:
+/// a model that leaks reasoning with thinking off is sampled at temperature 0.
+fn auto_effort(
+    model: &crate::config::Model,
+    body: &mut Value,
+) -> (localfleet_route::Effort, Vec<localfleet_route::Clamp>) {
+    use localfleet_route::{Clamp, Effort};
+    let kwargs = &body["chat_template_kwargs"];
+    let explicit = body.get("reasoning_effort").is_some()
+        || kwargs.get("enable_thinking").is_some()
+        || kwargs.get("low_effort").is_some();
+    if !explicit {
+        let budget = body.get("thinking_budget_tokens").and_then(Value::as_u64);
+        body["reasoning_effort"] = json!(if budget.unwrap_or(0) > 0 {
+            "full"
+        } else {
+            "off"
+        });
+    }
+    let effort = match body.get("reasoning_effort").and_then(Value::as_str) {
+        Some(word) => Effort::parse(word).unwrap_or(Effort::Full),
+        None if body["chat_template_kwargs"]["enable_thinking"] == false => Effort::Off,
+        None if body["chat_template_kwargs"]["low_effort"] == true => Effort::Low,
+        None => Effort::Full,
+    };
+    let mut clamps = Vec::new();
+    if effort == Effort::Off
+        && off_requires_t0(model)
+        && body.get("temperature").and_then(Value::as_f64) != Some(0.0)
+    {
+        body["temperature"] = json!(0);
+        clamps.push(Clamp::TemperatureZero);
+    }
+    (effort, clamps)
+}
+
+/// Chat with `model: "auto"`. Every preferred model's hosts are classified once; warm hosts are
+/// tried first in preference order, then cold hosts whose load evicts nothing, and nothing else.
+/// Each attempt leases in a mode that cannot load (warm) or cannot evict (cold), so the rule
+/// holds where the load happens. A refusal before running moves to the next host.
+async fn auto_chat(
+    s: &Arc<Service>,
+    path: &str,
+    value: Value,
+    headers: &axum::http::HeaderMap,
+    start: Instant,
+) -> Response {
+    use localfleet_route::{Modality, Route, Thread, Why};
+    if let Err(e) = resolve_auto(s, path, headers) {
+        return e.into_response();
+    }
+    let thread = match thread_of(headers) {
+        Ok(thread) => thread,
+        Err(e) => return e.into_response(),
+    };
+    let conversation = match headers.get("x-granite-conversation").map(|v| v.to_str()) {
+        None => None,
+        Some(Ok(id)) if localfleet_route::Conversations::valid_id(id) => Some(id.to_owned()),
+        Some(_) => {
+            return failure(
+                "invalid_schema",
+                "x-granite-conversation must be 1-128 characters from A-Z, a-z, 0-9, '.', '_', ':' and '-'",
+            )
+            .into_response();
+        }
+    };
+    let prefer = &s.config.auto.prefer["chat"];
+    let first = prefer[0].as_str();
+    let background = thread == "background";
+    let mut classes = Vec::new();
+    for id in prefer {
+        classes.push((id.as_str(), s.auto_hosts(id, "chat", background).await));
+    }
+    let usable = |id: &str| {
+        classes.iter().any(|(m, hosts)| {
+            *m == id
+                && hosts
+                    .iter()
+                    .any(|(_, c)| matches!(c, HostClass::Warm | HostClass::ColdFree))
+        })
+    };
+    let sticky = conversation
+        .as_deref()
+        .and_then(|c| s.conversations.lock().unwrap().get(c, Instant::now()));
+    let moved = sticky.as_deref().is_some_and(|m| !usable(m));
+    let mut attempts: Vec<(&str, Option<crate::config::Peer>, HostClass, Why)> = Vec::new();
+    for class in [HostClass::Warm, HostClass::ColdFree] {
+        for (id, hosts) in &classes {
+            for (peer, _) in hosts.iter().filter(|(_, c)| *c == class) {
+                let why = match (sticky.as_deref() == Some(*id), moved, class) {
+                    (true, _, _) => Why::Sticky,
+                    (_, true, _) => Why::StickyMoved,
+                    (_, _, HostClass::Warm) => Why::Warm,
+                    _ => Why::ColdFree,
+                };
+                attempts.push((id, peer.clone(), class, why));
+            }
+        }
+    }
+    // The conversation's model goes first while it can serve.
+    attempts.sort_by_key(|(_, _, _, why)| *why != Why::Sticky);
+    let thread_word = Thread::parse(thread).unwrap_or(Thread::Main);
+    let mut refused_busy = false;
+    let mut refused = false;
+    for (id, peer, class, why) in attempts {
+        let model = &s.models[id];
+        let mut body = value.clone();
+        body["model"] = json!(id);
+        let (effort, clamps) = auto_effort(model, &mut body);
+        if let Err(e) = prepare(s, path, id, &mut body) {
+            return e.into_response();
+        }
+        let mode = if class == HostClass::Warm {
+            LoadMode::WarmOnly
+        } else {
+            LoadMode::NoEvict
+        };
+        let peer_attempt = peer.is_some();
+        let mut response = run(s, path, id, body, headers, thread, vec![peer], mode, start).await;
+        if let Some(code) = auto_refusal(&response) {
+            refused_busy |= code == "admission_busy";
+            refused = true;
+            if peer_attempt {
+                // run counts local lease refusals itself; a lone peer attempt is not counted there.
+                s.count_rejection(id, &code);
+            }
+            continue;
+        }
+        let why = if refused && why != Why::Sticky {
+            Why::RefusedNext
+        } else {
+            why
+        };
+        let mut route = Route::new(Modality::Chat, id, first, usable(first), thread_word, why);
+        route.effort = Some(effort);
+        route.clamps = clamps;
+        if let Some(header) = route.header()
+            && let Ok(value) = HeaderValue::from_str(&header)
+        {
+            response.headers_mut().insert("x-granite-route", value);
+        }
+        if response.status().is_success()
+            && let Some(conversation) = &conversation
+        {
+            s.conversations
+                .lock()
+                .unwrap()
+                .put(conversation, id, Instant::now());
+        }
+        return response;
+    }
+    // Nothing could serve without loading over a ready model. The reason is closed and the
+    // per-host detail stays in /internal/hosts and the logs.
+    let all = classes
+        .iter()
+        .flat_map(|(_, hosts)| hosts.iter().map(|(_, c)| *c));
+    let (reason, status, wait, message) = if refused_busy
+        || all.clone().any(|c| c == HostClass::Full)
+    {
+        (
+            "busy",
+            StatusCode::TOO_MANY_REQUESTS,
+            Some("2"),
+            "Every loaded chat model is busy; retry shortly",
+        )
+    } else if all.clone().any(|c| c != HostClass::Held) {
+        (
+            "no_room",
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some("30"),
+            "No preferred chat model can serve without evicting a loaded model; name a model to allow loading",
+        )
+    } else {
+        (
+            "held",
+            StatusCode::SERVICE_UNAVAILABLE,
+            None,
+            "Every preferred chat model is held or not deployed here; an operator must release one",
+        )
+    };
+    let summary: Vec<_> = classes
+        .iter()
+        .map(|(id, hosts)| {
+            (
+                *id,
+                hosts
+                    .iter()
+                    .map(|(peer, c)| (peer.as_ref().map(|p| p.id.as_str()), *c))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    tracing::info!(?summary, reason, "auto chat found no host");
+    let mut response = (
+        status,
+        Json(json!({"error":{"type":"granite_error","code":"auto_unavailable","reason":reason,"message":message}})),
     )
+        .into_response();
+    response.headers_mut().insert(
+        "x-granite-error-code",
+        HeaderValue::from_static("auto_unavailable"),
+    );
+    if let Some(wait) = wait {
+        response
+            .headers_mut()
+            .insert("retry-after", HeaderValue::from_static(wait));
+    }
+    response
+}
+
+/// `auto` resolves once, on the node that first receives the request; peers only ever see a
+/// concrete id. Embeddings and forecast are pinned to their first preference.
+fn resolve_auto(
+    s: &Service,
+    path: &str,
+    headers: &axum::http::HeaderMap,
+) -> Result<String, Failure> {
+    if headers
+        .get("x-granite-hop")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0)
+        > 0
+    {
+        return Err(failure(
+            "auto_not_forwardable",
+            "auto is resolved by the first node; peers receive a model id",
+        ));
+    }
+    let capability = contracts::capability(path).unwrap_or("");
+    if !auto_capabilities(s).contains(&capability) {
+        return Err(failure(
+            "unsupported_auto",
+            format!("auto is not available for {path} in this profile; name a model"),
+        ));
+    }
+    Ok(s.config.auto.prefer[capability][0].clone())
 }
 async fn admin_models(State(s): State<Arc<Service>>) -> Json<Value> {
     Json(
@@ -385,53 +679,25 @@ async fn dispatch(
     if let Err(e) = contracts::validate(path, &value) {
         return failure("invalid_schema", e).into_response();
     }
+    let start = Instant::now();
+    if s.config.auto.enabled && value["model"] == "auto" {
+        if path == "/v1/chat/completions" && auto_capabilities(&s).contains(&"chat") {
+            return auto_chat(&s, path, value, headers, start).await;
+        }
+        match resolve_auto(&s, path, headers) {
+            Ok(id) => value["model"] = json!(id),
+            Err(e) => return e.into_response(),
+        }
+    }
     let id = s.resolve_model(value["model"].as_str().unwrap()).to_owned();
     value["model"] = json!(id);
-    let Some(model) = s.models.get(&id) else {
-        return failure("unknown_model", id).into_response();
+    if let Err(e) = prepare(&s, path, &id, &mut value) {
+        return e.into_response();
+    }
+    let thread = match thread_of(headers) {
+        Ok(thread) => thread,
+        Err(e) => return e.into_response(),
     };
-    let capability = contracts::capability(path).unwrap_or("");
-    if !model.capabilities.iter().any(|c| c == capability) {
-        return failure(
-            "unsupported_capability",
-            format!("{} does not declare {capability}", model.id),
-        )
-        .into_response();
-    }
-    if model.family == "switch"
-        && path == "/v1/chat/completions"
-        && value["chat_template_kwargs"]["adapter_name"]
-            .as_str()
-            .is_none()
-    {
-        return failure(
-            "invalid_schema",
-            "Switch requires explicit chat_template_kwargs.adapter_name",
-        )
-        .into_response();
-    }
-    if path == "/v1/chat/completions"
-        && model.family == "language"
-        && let Err(e) = normalize_chat(&id, &mut value)
-    {
-        return failure("invalid_schema", e).into_response();
-    }
-    let start = Instant::now();
-    let request_id = headers
-        .get("x-granite-request-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let thread = headers
-        .get("x-granite-thread")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("main");
-    if !matches!(thread, "main" | "background" | "decider") {
-        return failure(
-            "invalid_schema",
-            "x-granite-thread must be main, background or decider",
-        )
-        .into_response();
-    }
     if !s.workers.contains_key(&id) && !s.config.peers.iter().any(|p| p.models.contains(&id)) {
         return failure(
             "model_unavailable",
@@ -439,9 +705,7 @@ async fn dispatch(
         )
         .into_response();
     }
-    if path == "/v1/systemone" {
-        value["cache_prompt"] = json!(false);
-    }
+    let capability = contracts::capability(path).unwrap_or("");
     let candidates = match s.placement(&id, capability, thread == "background").await {
         Ok(candidates) => candidates,
         Err(e) => {
@@ -449,6 +713,81 @@ async fn dispatch(
             return e.into_response();
         }
     };
+    let mode = LoadMode::from_header(headers.get("x-granite-load").and_then(|v| v.to_str().ok()));
+    run(
+        &s, path, &id, value, headers, thread, candidates, mode, start,
+    )
+    .await
+}
+
+/// Checks and rewrites that depend on the concrete model: capability, Switch's adapter, and the
+/// chat effort and thinking budget. Runs once per model a request is tried on.
+fn prepare(s: &Service, path: &str, id: &str, value: &mut Value) -> Result<(), Failure> {
+    let Some(model) = s.models.get(id) else {
+        return Err(failure("unknown_model", id));
+    };
+    let capability = contracts::capability(path).unwrap_or("");
+    if !model.capabilities.iter().any(|c| c == capability) {
+        return Err(failure(
+            "unsupported_capability",
+            format!("{} does not declare {capability}", model.id),
+        ));
+    }
+    if model.family == "switch"
+        && path == "/v1/chat/completions"
+        && value["chat_template_kwargs"]["adapter_name"]
+            .as_str()
+            .is_none()
+    {
+        return Err(failure(
+            "invalid_schema",
+            "Switch requires explicit chat_template_kwargs.adapter_name",
+        ));
+    }
+    if path == "/v1/chat/completions"
+        && model.family == "language"
+        && let Err(e) = normalize_chat(off_requires_t0(model), value)
+    {
+        return Err(failure("invalid_schema", e));
+    }
+    if path == "/v1/systemone" {
+        value["cache_prompt"] = json!(false);
+    }
+    Ok(())
+}
+
+fn thread_of(headers: &axum::http::HeaderMap) -> Result<&str, Failure> {
+    let thread = headers
+        .get("x-granite-thread")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("main");
+    if !matches!(thread, "main" | "background" | "decider") {
+        return Err(failure(
+            "invalid_schema",
+            "x-granite-thread must be main, background or decider",
+        ));
+    }
+    Ok(thread)
+}
+
+/// Serve one concrete model on the ranked hosts: lease or forward, then provenance headers.
+#[allow(clippy::too_many_arguments)]
+async fn run(
+    s: &Arc<Service>,
+    path: &str,
+    id: &str,
+    mut value: Value,
+    headers: &axum::http::HeaderMap,
+    thread: &str,
+    candidates: Vec<Option<crate::config::Peer>>,
+    mode: LoadMode,
+    start: Instant,
+) -> Response {
+    let model = &s.models[id];
+    let request_id = headers
+        .get("x-granite-request-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     let attempts = candidates.len();
     let mut outcome = None;
     for (attempt, placement) in candidates.into_iter().enumerate() {
@@ -457,12 +796,12 @@ async fn dispatch(
         let fallback = attempt + 1 < attempts;
         let local = placement.is_none();
         let (url, token, lease, revision, backend) = if local
-            && let Some(worker) = s.workers.get(&id)
+            && let Some(worker) = s.workers.get(id)
         {
-            let lease = match s.lease(&id, thread == "background").await {
+            let lease = match s.lease(id, thread == "background", mode).await {
                 Ok(l) => l,
                 Err(e) => {
-                    s.count_rejection(&id, &e.code);
+                    s.count_rejection(id, &e.code);
                     if e.code == "admission_busy" && fallback {
                         continue;
                     }
@@ -526,15 +865,27 @@ async fn dispatch(
             ]}],"max_tokens":value["max_tokens"].as_u64().unwrap_or(1024),"temperature":0,"stream":false});
             forward_path = "/v1/chat/completions";
         }
+        // llama.cpp reports one completion count; a buffered reply gets its thinking share counted.
+        let count_reasoning = local
+            && backend == "llama_cpp"
+            && path == "/v1/chat/completions"
+            && value.get("thinking_budget_tokens").is_some()
+            && value["stream"] != true;
+        // Peers are LocalFleet nodes that apply the budget themselves; only the last hop adds it.
+        let engine_body =
+            (local && path == "/v1/chat/completions").then(|| engine_chat_body(&value, &backend));
         let mut request = s
             .client
             .post(format!("{url}{forward_path}"))
-            .json(&value)
+            .json(engine_body.as_ref().unwrap_or(&value))
             .header("x-granite-request-id", request_id)
             .header("x-granite-thread", thread)
             .timeout(Duration::from_secs(600));
         if let Some((token, hop)) = token {
             request = request.bearer_auth(token).header("x-granite-hop", hop);
+            if mode != LoadMode::Normal {
+                request = request.header("x-granite-load", "warm-only");
+            }
         }
         let response = match request.send().await {
             Ok(upstream) if !local && fallback && refused_before_running(&upstream) => {
@@ -543,7 +894,7 @@ async fn dispatch(
                     .get("x-granite-error-code")
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("admission_busy");
-                s.count_rejection(&id, code);
+                s.count_rejection(id, code);
                 continue;
             }
             Ok(upstream) if normalize_vision && upstream.status().is_success() => {
@@ -553,6 +904,15 @@ async fn dispatch(
                     Ok(output)=>Json(json!({"text":output["choices"][0]["message"]["content"],"usage":output["usage"],"model":id,"revision":revision,"structural_quality":null})).into_response(),
                     Err(e)=>failure("backend_error",e.to_string()).into_response(),
                 }
+            }
+            Ok(upstream) if count_reasoning && upstream.status().is_success() => {
+                let parsed = upstream.json::<Value>().await;
+                let response = match parsed {
+                    Ok(output) => reasoning_usage(&s.client, &url, output).await,
+                    Err(e) => failure("backend_error", e.to_string()).into_response(),
+                };
+                drop(lease);
+                response
             }
             Ok(upstream) => forward_response(upstream, lease).await,
             Err(e) => failure("backend_unreachable", e.to_string()).into_response(),
@@ -567,14 +927,14 @@ async fn dispatch(
     let mut response = model_headers(response, &revision, &backend);
     response
         .headers_mut()
-        .insert("x-granite-model-alias", HeaderValue::from_str(&id).unwrap());
+        .insert("x-granite-model-alias", HeaderValue::from_str(id).unwrap());
     if !response.headers().contains_key("x-granite-host") {
         response.headers_mut().insert(
             "x-granite-host",
             HeaderValue::from_str(&s.config.host_id).unwrap(),
         );
     }
-    if local && let Some(worker) = s.workers.get(&id) {
+    if local && let Some(worker) = s.workers.get(id) {
         response.headers_mut().insert(
             "x-granite-device",
             HeaderValue::from_str(&worker.spec.device).unwrap(),
@@ -685,6 +1045,7 @@ async fn forward_response(
         "x-granite-artifact-sha256",
         "x-granite-host",
         "x-granite-model-alias",
+        "x-granite-reasoning-tokens",
         "server-timing",
     ] {
         if let Some(value) = headers.get(name) {
@@ -694,7 +1055,76 @@ async fn forward_response(
     response
 }
 
-fn normalize_chat(id: &str, value: &mut Value) -> Result<(), String> {
+/// Adds `usage.completion_tokens_details.reasoning_tokens`, counted by re-tokenizing the returned
+/// reasoning with the same engine. The header says so, because a re-tokenized count can differ
+/// from the generated one by a token at the boundaries.
+async fn reasoning_usage(client: &reqwest::Client, url: &str, mut output: Value) -> Response {
+    let reasoning = output["choices"][0]["message"]["reasoning_content"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    let count = if reasoning.is_empty() {
+        Some(0)
+    } else {
+        let tokenized = client
+            .post(format!("{url}/tokenize"))
+            .json(&json!({"model":output["model"],"content":reasoning,"add_special":false}))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await;
+        match tokenized {
+            Ok(r) if r.status().is_success() => r
+                .json::<Value>()
+                .await
+                .ok()
+                .and_then(|v| v["tokens"].as_array().map(|t| t.len() as u64)),
+            _ => None,
+        }
+    };
+    if let Some(count) = count
+        && output["usage"].is_object()
+    {
+        output["usage"]["completion_tokens_details"]["reasoning_tokens"] = json!(count);
+    }
+    let mut response = Json(output).into_response();
+    if count.is_some() {
+        response.headers_mut().insert(
+            "x-granite-reasoning-tokens",
+            HeaderValue::from_static("retokenized"),
+        );
+    }
+    response
+}
+
+/// Thinking tokens per effort when the client sends no `thinking_budget_tokens` (Felipe's ruling,
+/// 2026-10-26): the reply keeps its own `max_tokens`, so thinking can never starve it.
+const LOW_THINKING_BUDGET: u64 = 1024;
+const FULL_THINKING_BUDGET: u64 = 4096;
+const MAX_THINKING_BUDGET: u64 = 32768;
+
+/// The body a local engine receives. Clients set `max_tokens` for the reply alone; engines count
+/// thinking inside it, so the thinking budget is added here, at the last hop only, and the engine
+/// ends thinking when the budget is spent. llama.cpp reads `thinking_budget_tokens`, oMLX
+/// `thinking_budget`.
+fn engine_chat_body(value: &Value, backend: &str) -> Value {
+    let mut body = value.clone();
+    let Some(budget) = body.get("thinking_budget_tokens").and_then(Value::as_u64) else {
+        return body;
+    };
+    for key in ["max_tokens", "max_completion_tokens"] {
+        if let Some(reply) = body.get(key).and_then(Value::as_u64) {
+            body[key] = json!(reply.saturating_add(budget));
+        }
+    }
+    if backend == "omlx" {
+        let object = body.as_object_mut().unwrap();
+        object.remove("thinking_budget_tokens");
+        object.insert("thinking_budget".into(), json!(budget));
+    }
+    body
+}
+
+fn normalize_chat(off_needs_t0: bool, value: &mut Value) -> Result<(), String> {
     if value
         .get("chat_template_kwargs")
         .is_some_and(|v| !v.is_object())
@@ -734,21 +1164,39 @@ fn normalize_chat(id: &str, value: &mut Value) -> Result<(), String> {
         value.as_object_mut().unwrap().remove("reasoning_effort");
     }
     let thinking = value["chat_template_kwargs"]["enable_thinking"] != false;
+    let budget = match value.get("thinking_budget_tokens") {
+        None if !thinking => 0,
+        None if value["chat_template_kwargs"]["low_effort"] == true => LOW_THINKING_BUDGET,
+        None => FULL_THINKING_BUDGET,
+        Some(v) => v
+            .as_u64()
+            .filter(|b| *b <= MAX_THINKING_BUDGET)
+            .ok_or("thinking_budget_tokens must be an integer from 0 to 32768")?,
+    };
+    if thinking {
+        value["thinking_budget_tokens"] = json!(budget);
+    } else if budget > 0 {
+        return Err(
+            "thinking_budget_tokens needs thinking; set reasoning_effort to low or full".into(),
+        );
+    } else {
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("thinking_budget_tokens");
+    }
     if thinking && value.get("grammar").is_some() {
         return Err("GBNF grammar with thinking can consume the answer inside reasoning; use response_format.json_schema or explicitly disable thinking".into());
     }
-    if id == "granite-4.2-3b"
-        && !thinking
-        && value.get("temperature").and_then(Value::as_f64) != Some(0.0)
-    {
-        return Err("Granite 4.2 3B non-thinking requires explicit temperature=0 because visible reasoning leaked at higher temperatures in prior probes".into());
+    if off_needs_t0 && !thinking && value.get("temperature").and_then(Value::as_f64) != Some(0.0) {
+        return Err("This model with thinking off requires explicit temperature=0 because visible reasoning leaked at higher temperatures in prior probes".into());
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{equal, normalize_chat, refused_before_running};
+    use super::{engine_chat_body, equal, normalize_chat, reasoning_usage, refused_before_running};
     use crate::lifecycle::failure;
     use axum::response::IntoResponse;
     use serde_json::json;
@@ -806,7 +1254,7 @@ mod tests {
     #[test]
     fn reasoning_effort_maps_to_template_controls() {
         let mut value = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":"low"});
-        normalize_chat("granite-4.2-8b", &mut value).unwrap();
+        normalize_chat(false, &mut value).unwrap();
         assert_eq!(
             value["chat_template_kwargs"],
             json!({"enable_thinking":true,"low_effort":true})
@@ -815,11 +1263,136 @@ mod tests {
     }
 
     #[test]
+    fn thinking_budget_defaults_per_effort_and_never_starves_the_reply() {
+        let budget = |effort: &str| {
+            let mut value = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":effort,
+                                   "temperature":0,"max_tokens":300});
+            normalize_chat(false, &mut value).unwrap();
+            value
+        };
+        assert!(budget("off").get("thinking_budget_tokens").is_none());
+        assert_eq!(budget("low")["thinking_budget_tokens"], 1024);
+        let full = budget("full");
+        assert_eq!(full["thinking_budget_tokens"], 4096);
+        assert_eq!(
+            full["max_tokens"], 300,
+            "the client's reply budget is kept until the last hop"
+        );
+        let llama = engine_chat_body(&full, "llama_cpp");
+        assert_eq!(
+            (
+                llama["max_tokens"].clone(),
+                llama["thinking_budget_tokens"].clone()
+            ),
+            (json!(4396), json!(4096))
+        );
+        let mut huge = full.clone();
+        huge["max_tokens"] = json!(u64::MAX);
+        assert_eq!(
+            engine_chat_body(&huge, "llama_cpp")["max_tokens"],
+            json!(u64::MAX)
+        );
+        let omlx = engine_chat_body(&full, "omlx");
+        assert_eq!(
+            (
+                omlx["thinking_budget"].clone(),
+                omlx.get("thinking_budget_tokens")
+            ),
+            (json!(4096), None)
+        );
+        // Forwarding normalizes again on the peer; the reply budget must not grow twice.
+        let mut again = full.clone();
+        normalize_chat(false, &mut again).unwrap();
+        assert_eq!(again, full);
+    }
+
+    #[tokio::test]
+    async fn reasoning_tokens_are_counted_by_the_engine_tokenizer() {
+        let engine = axum::Router::new().route(
+            "/tokenize",
+            axum::routing::post(
+                |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    let words = body["content"].as_str().unwrap().split(' ').count();
+                    axum::Json(json!({"tokens": vec![0; words]}))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, engine).await.unwrap() });
+        let client = reqwest::Client::new();
+        let reply = |reasoning: &str| {
+            json!({"model":"m","usage":{"completion_tokens":9},
+            "choices":[{"message":{"content":"yes","reasoning_content":reasoning}}]})
+        };
+        let body = |r: axum::response::Response| async move {
+            let headers = r.headers().clone();
+            let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+            (
+                headers,
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            )
+        };
+        let (headers, value) =
+            body(reasoning_usage(&client, &url, reply("one two three")).await).await;
+        assert_eq!(
+            value["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            3
+        );
+        assert_eq!(headers["x-granite-reasoning-tokens"], "retokenized");
+        let (_, value) = body(reasoning_usage(&client, &url, reply("")).await).await;
+        assert_eq!(
+            value["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            0
+        );
+        // An engine without /tokenize leaves usage as the engine reported it.
+        let (headers, value) =
+            body(reasoning_usage(&client, "http://127.0.0.1:9", reply("a b")).await).await;
+        assert!(value["usage"].get("completion_tokens_details").is_none());
+        assert!(!headers.contains_key("x-granite-reasoning-tokens"));
+    }
+
+    #[test]
+    fn explicit_thinking_budget_wins_and_is_validated() {
+        let mut value = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":"full",
+                               "thinking_budget_tokens":200});
+        normalize_chat(false, &mut value).unwrap();
+        assert_eq!(value["thinking_budget_tokens"], 200);
+        assert!(
+            value.get("max_tokens").is_none()
+                && engine_chat_body(&value, "llama_cpp")
+                    .get("max_tokens")
+                    .is_none()
+        );
+        for bad in [json!(-1), json!("4k"), json!(40000)] {
+            let mut value = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":"low","thinking_budget_tokens":bad});
+            assert!(normalize_chat(false, &mut value).is_err());
+        }
+        let mut off = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":"off","thinking_budget_tokens":100});
+        assert!(normalize_chat(false, &mut off).is_err());
+    }
+
+    #[test]
+    fn a_model_that_leaks_with_thinking_off_needs_temperature_zero() {
+        for body in [
+            json!({"model":"m","messages":[],"reasoning_effort":"off"}),
+            json!({"model":"m","messages":[],"reasoning_effort":"off","temperature":0.7}),
+        ] {
+            let mut value = body.clone();
+            assert!(normalize_chat(true, &mut value).is_err(), "{body}");
+            let mut value = body;
+            assert!(normalize_chat(false, &mut value).is_ok());
+        }
+        let mut zero = json!({"model":"m","messages":[],"reasoning_effort":"off","temperature":0});
+        assert!(normalize_chat(true, &mut zero).is_ok());
+    }
+
+    #[test]
     fn conflicting_reasoning_controls_fail() {
         let mut value = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":"off",
                                "chat_template_kwargs":{"enable_thinking":true}});
-        assert!(normalize_chat("granite-4.2-8b", &mut value).is_err());
+        assert!(normalize_chat(false, &mut value).is_err());
         let mut bad = json!({"model":"granite-4.2-8b","messages":[],"reasoning_effort":"max"});
-        assert!(normalize_chat("granite-4.2-8b", &mut bad).is_err());
+        assert!(normalize_chat(false, &mut bad).is_err());
     }
 }

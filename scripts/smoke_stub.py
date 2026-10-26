@@ -44,6 +44,7 @@ def main():
         deployment = config['deployments'][0]
         deployment['base_url'] = f'http://127.0.0.1:{worker}'
         deployment['command'][deployment['command'].index('--port') + 1] = str(worker)
+        config['auto'] = {'enabled': True, 'prefer': {'embeddings': [deployment['model']]}}
         path = Path(state) / 'config.json'
         path.write_text(json.dumps(config))
         env = dict(os.environ, GRANITE_API_KEY=API, GRANITE_ADMIN_KEY=ADMIN)
@@ -64,6 +65,21 @@ def main():
             checks.append(('embeds through the stub', status == 200 and len(data.get('data', [])) == 2))
             checks.append(('reports provenance', headers.get('x-granite-backend') == 'embedding_native'
                            and headers.get('x-granite-model-revision') == config['deployments'][0]['revision']))
+            status, headers, body = call('/v1/embeddings', {'model': 'auto', 'input': ['a']})
+            checks.append(('auto embeds with the pinned model', status == 200
+                           and headers.get('x-granite-model-alias') == model and len(json.loads(body)['data']) == 1))
+            status, _, body = call('/v1/chat/completions', {'model': 'auto', 'messages': [{'role': 'user', 'content': 'hi'}]})
+            checks.append(('auto refuses endpoints it does not cover', status == 400 and b'unsupported_auto' in body))
+            status, _, body = call('/v1/models')
+            listed = [m for m in json.loads(body)['data'] if m['id'] == 'auto'] if status == 200 else []
+            checks.append(('lists auto with its capabilities', listed and listed[0]['capabilities'] == ['embeddings']))
+            req = urllib.request.Request(f'http://127.0.0.1:{PORT}/v1/embeddings', json.dumps({'model': 'auto', 'input': 'x'}).encode(),
+                                         {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json', 'x-granite-hop': '1'})
+            try:
+                urllib.request.urlopen(req, timeout=30); hop = 200
+            except urllib.error.HTTPError as e:
+                hop = e.code if b'auto_not_forwardable' in e.read() else -1
+            checks.append(('never resolves auto for a peer hop', hop == 400))
             status, _, _ = call('/admin/models', key=API)
             checks.append(('keeps admin routes admin-only', status == 401))
             status, _, body = call('/internal/hosts', key=ADMIN)
