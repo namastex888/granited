@@ -293,6 +293,11 @@ def main():
         check('audio and an image: transcribed, then the vision model',
               status == 200 and head.get('x-granite-model-alias') == VISION and route.get('stages')
               and seen.get('parts') == ['text', 'image_url'])
+        fake = {'type': 'input_audio', 'input_audio': {'data': base64.b64encode(bytes(400)).decode(), 'format': 'wav'}}
+        status, _, body, _, _ = r.chat(content=[fake])
+        check('bytes that are not a wav file are refused before the speech worker', status == 400 and 'not a wav' in body['error']['message'])
+        status, _, body, _, _ = r.chat(content=[audio()] * 5)
+        check('more than 4 audio parts in one request are refused', status == 400 and 'at most 4' in body['error']['message'])
         status, _, body, _, _ = r.chat(content=[audio('mp3')])
         check('audio other than wav is refused', status == 400 and body['error']['code'] == 'invalid_schema')
     finally:
@@ -338,6 +343,55 @@ def main():
         check('an image never evicts the resident chat model: 503 no_room for the vision list',
               status == 503 and body['error'].get('reason') == 'no_room' and 'vision' in body['error']['message']
               and r.states().get(B8) == 'ready' and r.states().get(VISION) != 'ready')
+    finally:
+        r.close()
+
+    # A peer that dies is skipped: the request falls over to the next host at once.
+    b = Router('cpu', models=(B3,), host='peer-b')
+    a = Router('cpu', models=(B3,), host='node-a',
+               peers=[dict(id='peer-b', url=f'http://127.0.0.1:{b.port}', token_env='PEER_TOKEN', models=[B3])])
+    try:
+        b.chat(model=B3, reasoning_effort='off', temperature=0)
+        status, head, _, _, _ = a.chat(model=B3, reasoning_effort='off', temperature=0)
+        served_by_peer = status == 200 and head.get('x-granite-host') == 'peer-b'
+        b.process.kill()
+        b.process.wait()
+        status, head, _, _, _ = a.chat(model=B3, reasoning_effort='off', temperature=0)
+        check('a dead peer is skipped: the next host serves instead of a 502',
+              served_by_peer and status == 200 and head.get('x-granite-host') == 'node-a')
+    finally:
+        a.close()
+        b.state.cleanup()
+
+    # /v1/devices: per-device model states in placement's words and the best tier that fits.
+    T17, T06 = 'qwen3-tts-1.7b-base', 'qwen3-tts-0.6b-base'
+    r = Router('unified', models=(T17, T06), peers=[dict(id='gone', url='http://127.0.0.1:9', token_env='PEER_TOKEN', models=[T17])])
+    try:
+        def devices(key=API):
+            req = urllib.request.Request(f'http://127.0.0.1:{r.port}/v1/devices', headers={'Authorization': 'Bearer ' + key})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    return resp.status, resp.read().decode()
+            except urllib.error.HTTPError as e:
+                return e.code, ''
+        status, raw = devices()
+        local, gone = json.loads(raw)['devices']
+        tts = {e['model']: e['state'] for e in local['capabilities']['speech_synthesis']}
+        check('/v1/devices: both voice tiers fit while nothing is loaded, and the better tier is recommended',
+              status == 200 and tts == {T17: 'cold_fits', T06: 'cold_fits'}
+              and local['recommended']['speech_synthesis']['model'] == T17)
+        check('/v1/devices: an unreachable peer is listed as unreachable, and no address or hostname leaks',
+              gone == {'device': 'gone', 'local': False, 'reachable': False} and '127.0.0.1' not in raw and 'hostname' not in raw)
+        r.admin(f'/admin/models/{T06}/load')
+        for _ in range(100):
+            if r.states().get(T06) == 'ready':
+                break
+            time.sleep(0.1)
+        local = json.loads(devices()[1])['devices'][0]
+        tts = {e['model']: e['state'] for e in local['capabilities']['speech_synthesis']}
+        check('/v1/devices: with 0.6B resident on the one device, 1.7B is no_room and 0.6B is recommended',
+              tts == {T17: 'no_room', T06: 'warm'} and local['recommended']['speech_synthesis']['model'] == T06)
+        check('/v1/devices needs the API key', devices('wrong-key')[0] == 401)
     finally:
         r.close()
 

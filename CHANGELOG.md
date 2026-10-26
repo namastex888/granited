@@ -16,5 +16,7 @@
 
 ### Added
 
+- `GET /v1/devices`: each host's models per capability, in placement's words, with a `recommended` model per capability (the best registry `tier` that fits, warm first).
+- Qwen3-TTS 1.7B and 0.6B Base (Apache-2.0) in the registry as the `good_gpu` and `gpu_poor` voice tiers, with a worker for `/v1/audio/speech` (in-context voice clone; there is no default voice).
 - `/v1/models` reports `context_tokens` and `context_source` (`engine` once the engine reported it at load, else `config`) per model, and replies carry `x-granite-context-tokens`: the context one request gets on that node.
 - `model: "auto"` can take image input (`auto.images`) and audio input (`auto.audio`). Both are off by default and enabled on no profile until a measured pass on the real models.

@@ -319,6 +319,15 @@ impl Service {
         Ok(candidates.into_iter().map(|(_, peer)| peer).collect())
     }
 
+    /// Mark a peer unreachable now, so placement skips it for `PEER_BACKOFF` instead of trusting
+    /// a snapshot taken before it died.
+    pub async fn forget_peer(&self, id: &str) {
+        self.peer_hardware
+            .lock()
+            .await
+            .insert(id.to_owned(), (Instant::now(), None));
+    }
+
     /// A peer's hardware report, cached for `PEER_FRESH`; `None` while it is unreachable.
     async fn peer_snapshot(&self, peer: &crate::config::Peer) -> Option<Value> {
         let cached = self.peer_hardware.lock().await.get(&peer.id).cloned();
@@ -378,6 +387,102 @@ impl Service {
             hosts.push((Some(peer.clone()), class));
         }
         hosts
+    }
+
+    /// `GET /v1/devices`: each host of the fleet, and per capability the state of every model
+    /// it deploys, in placement's words (`warm`, `cold_fits`, `no_room`, `held`), from the same
+    /// snapshots placement reads. `recommended` is the best registry `tier` that fits, preferring
+    /// warm, so every client draws the same conclusion. No hostname or address is included.
+    pub async fn devices(&self) -> Value {
+        const TIERS: [&str; 3] = ["good_gpu", "gpu_poor", "cpu"];
+        let mut hosts = vec![(
+            self.config.host_id.clone(),
+            true,
+            Some(self.hardware().await),
+        )];
+        for peer in &self.config.peers {
+            hosts.push((peer.id.clone(), false, self.peer_snapshot(peer).await));
+        }
+        let mut devices = Vec::new();
+        for (id, local, hw) in hosts {
+            let Some(hw) = hw else {
+                devices.push(json!({"device": id, "local": local, "reachable": false}));
+                continue;
+            };
+            let workers = hw["managed_workers"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let mut by_capability: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+            for worker in &workers {
+                let Some(model) = worker["model"].as_str().and_then(|m| self.models.get(m)) else {
+                    continue;
+                };
+                for capability in &model.capabilities {
+                    let mut class = classify(&hw, &model.id, capability, false);
+                    if local
+                        && class == HostClass::ColdFree
+                        && self
+                            .workers
+                            .get(&model.id)
+                            .is_some_and(|w| self.would_displace(w))
+                    {
+                        class = HostClass::WouldDisplace;
+                    }
+                    let state = match class {
+                        HostClass::Warm | HostClass::Full => "warm",
+                        HostClass::ColdFree => "cold_fits",
+                        HostClass::Held => "held",
+                        _ => "no_room",
+                    };
+                    let mut entry = json!({"model": model.id, "state": state});
+                    if let Some(tier) = model.metadata.get("tier") {
+                        entry["tier"] = tier.clone();
+                    }
+                    if let Some(bytes) = worker["reserved_peak_bytes"].as_u64() {
+                        entry["budget_gib"] =
+                            json!((bytes as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0);
+                    }
+                    if let Some(ms) = worker["load_ms"].as_u64() {
+                        entry["load_s"] = json!((ms as f64 / 100.0).round() / 10.0);
+                    }
+                    by_capability
+                        .entry(capability.clone())
+                        .or_default()
+                        .push(entry);
+                }
+            }
+            let mut recommended = serde_json::Map::new();
+            for (capability, entries) in &by_capability {
+                let rank = |e: &Value| {
+                    let tier = TIERS.iter().position(|t| e["tier"] == *t)?;
+                    let fits = matches!(e["state"].as_str(), Some("warm" | "cold_fits"));
+                    fits.then_some((tier, e["state"] != "warm"))
+                };
+                if let Some(best) = entries
+                    .iter()
+                    .filter_map(|e| Some((rank(e)?, e)))
+                    .min_by_key(|(r, _)| *r)
+                {
+                    recommended.insert(
+                        capability.clone(),
+                        json!({"model": best.1["model"], "why": "best tier that fits, warm first"}),
+                    );
+                } else if entries.iter().any(|e| e.get("tier").is_some()) {
+                    recommended.insert(
+                        capability.clone(),
+                        json!({"model": null, "why": "no tier fits on this device now"}),
+                    );
+                }
+            }
+            let accelerator = hw["accelerators"].get(0).map(|a| json!({"vendor": a["vendor"], "name": a["name"], "memory_kind": a["memory_kind"]}));
+            devices.push(json!({
+                "device": id, "local": local, "reachable": true, "accelerator": accelerator,
+                "memory_free_gib": hw["ram"]["available_bytes"].as_u64().map(|b| (b as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0),
+                "capabilities": by_capability, "recommended": recommended,
+            }));
+        }
+        json!({"devices": devices})
     }
 
     /// Whether loading `target` would have to evict: `room()`'s exclusive-accelerator test.

@@ -145,7 +145,10 @@ class Native:
                     raw = base64.b64decode(data['audio_base64'], validate=True)
                     if len(raw) > 25 * 1024 * 1024:
                         raise ValueError('Audio file exceeds 25 MiB')
-                    samples, rate = sf.read(io.BytesIO(raw), dtype='float32')
+                    try:
+                        samples, rate = sf.read(io.BytesIO(raw), dtype='float32')
+                    except sf.LibsndfileError:
+                        raise ValueError('Audio is not a readable wav, flac or ogg file') from None
                     if samples.ndim != 1:
                         raise ValueError('Expected mono audio; downmix explicitly')
                 else:

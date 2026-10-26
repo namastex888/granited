@@ -153,7 +153,7 @@ pub fn router(service: Arc<Service>) -> Router {
         .route("/readyz",get(||async { Json(json!({"status":"ready","meaning":"Registry and control plane initialized; native models load on demand."})) }))
         .route("/v1/models",get(models)).route("/admin/models",get(admin_models)).route("/admin/discovery",get(discovery))
         .route("/admin/models/{id}/{action}",post(model_operation)).route("/admin/operations/{id}",get(operation))
-        .route("/admin/operations/{id}/cancel",post(cancel)).route("/internal/hardware",get(hardware)).route("/internal/hosts",get(hosts))
+        .route("/admin/operations/{id}/cancel",post(cancel)).route("/internal/hardware",get(hardware)).route("/v1/devices",get(devices)).route("/internal/hosts",get(hosts))
         .route("/internal/contracts",get(||async {Json(contracts::schemas())})).route("/internal/metrics",get(metrics))
         .route("/v1/audio/transcriptions",post(audio));
     for path in [
@@ -262,6 +262,8 @@ fn auto_refusal(response: &Response) -> Option<String> {
 const MAX_IMAGE_BYTES: usize = 8 << 20;
 /// Largest decoded `input_audio` part `auto` transcribes.
 const MAX_AUDIO_BYTES: usize = 16 << 20;
+/// Each `input_audio` part is its own speech-to-text call, so a request carries at most this many.
+const MAX_AUDIO_PARTS: usize = 4;
 const TRANSCRIBE: &str = "/v1/audio/transcriptions";
 
 fn content_parts(value: &Value) -> impl Iterator<Item = &Value> {
@@ -404,6 +406,13 @@ async fn auto_entry(
             }
         }
     }
+    if positions.len() > MAX_AUDIO_PARTS {
+        return failure(
+            "invalid_schema",
+            format!("at most {MAX_AUDIO_PARTS} input_audio parts per request"),
+        )
+        .into_response();
+    }
     for (m, p) in positions {
         let part = &value["messages"][m]["content"][p];
         if part["input_audio"]["format"] != "wav" {
@@ -414,6 +423,12 @@ async fn auto_entry(
             .unwrap_or("")
             .to_owned();
         match base64::engine::general_purpose::STANDARD.decode(&data) {
+            Ok(bytes)
+                if bytes.len() <= 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" =>
+            {
+                return failure("invalid_schema", "input_audio data is not a wav file")
+                    .into_response();
+            }
             Ok(bytes) if bytes.len() <= MAX_AUDIO_BYTES => {}
             Ok(_) => {
                 return failure(
@@ -739,6 +754,9 @@ fn resolve_auto(
         ));
     }
     Ok(s.config.auto.prefer[capability][0].clone())
+}
+async fn devices(State(s): State<Arc<Service>>) -> Json<Value> {
+    Json(s.devices().await)
 }
 async fn admin_models(State(s): State<Arc<Service>>) -> Json<Value> {
     Json(
@@ -1085,6 +1103,7 @@ async fn run(
         // running anything, so the next-ranked host may take the request.
         let fallback = attempt + 1 < attempts;
         let local = placement.is_none();
+        let peer_id = placement.as_ref().map(|peer| peer.id.clone());
         let (url, token, lease, revision, backend) = if local
             && let Some(worker) = s.workers.get(id)
         {
@@ -1205,7 +1224,20 @@ async fn run(
                 response
             }
             Ok(upstream) => forward_response(upstream, lease).await,
-            Err(e) => failure("backend_unreachable", e.to_string()).into_response(),
+            Err(e) => {
+                // A peer that cannot be reached (dead host, closed tunnel) is skipped from now on,
+                // and the next host takes the request. A timeout is not retried: it may have run.
+                if let Some(peer) = &peer_id
+                    && !e.is_timeout()
+                {
+                    tracing::warn!(peer, error = %e, "peer unreachable; trying the next host");
+                    s.forget_peer(peer).await;
+                    if fallback {
+                        continue;
+                    }
+                }
+                failure("backend_unreachable", e.to_string()).into_response()
+            }
         };
         outcome = Some((response, local, revision, backend, admission));
         break;
