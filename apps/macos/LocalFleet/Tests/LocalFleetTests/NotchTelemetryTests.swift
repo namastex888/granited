@@ -337,7 +337,7 @@ private func counters(_ output: Int64, since: Double = 1, prompt: Int64 = 0, cac
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let local = dir.appendingPathComponent("a.json"), remote = dir.appendingPathComponent("b.json")
         try Data(#"{"server":{"host":"127.0.0.1","port":8888},"auth":{"api_key":"k","skip_api_key_verification":false}}"#.utf8).write(to: local)
-        try Data(#"{"server":{"host":"192.168.1.20","port":8888},"auth":{"api_key":"k"}}"#.utf8).write(to: remote)
+        try Data(#"{"server":{"host":"203.0.113.20","port":8888},"auth":{"api_key":"k"}}"#.utf8).write(to: remote)
         #expect(NotchTelemetry.OMLXEndpoint.load(local.path) == .init(baseURL: "http://127.0.0.1:8888", key: "k"))
         #expect(NotchTelemetry.OMLXEndpoint.load(remote.path) == nil)
         let any = dir.appendingPathComponent("c.json")
