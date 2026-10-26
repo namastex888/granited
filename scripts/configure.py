@@ -22,11 +22,23 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-# One source for the language pool's parallelism: llama.cpp splits -c across -np slots, oMLX runs
-# --max-concurrent-requests (default 8), granited admits max_concurrency requests, and each slot must
-# hold context_tokens. Change these together.
+# One source for the language pool's parallelism: llama.cpp gets per-model parallel and ctx-size in its
+# preset, oMLX runs --max-concurrent-requests (default 8), granited admits max_concurrency requests,
+# and each slot holds context_tokens. Change these together.
 LANGUAGE_SLOTS = 2
 SLOT_CONTEXT = 8192
+# llama.cpp memory budgets by slot count: measured peak on an M5 Pro (phys_footprint plus the mapped
+# GGUF) plus 15%. 3B: 3.9 GB at 2, 5.3 GB at 4; 8B: 8.5 GB at 2, 11.3 GB at 4
+# (reports/2026-10-25-council-performance-concurrency.md). Four slots give 1.66-3x the throughput of
+# two and were measured on Metal only, so other hosts keep two unless --language-slots says otherwise.
+LLAMA_BUDGETS = {2: {'3b': 5*GIB, '8b': 9*GIB}, 4: {'3b': int(5.75*GIB), '8b': 12*GIB}}
+
+
+def host_ram():
+    out = subprocess.run(['sysctl', '-n', 'hw.memsize'], capture_output=True, text=True).stdout.strip()
+    if out.isdigit():
+        return int(out)
+    return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
 
 
 def write(path, value):
@@ -49,6 +61,8 @@ def main():
     parser.add_argument('--profile', help='Profile name; writes configs/PROFILE.json and keeps receipts under state/receipts')
     parser.add_argument('--host-id', help='Node identity reported to peers (default: profile or host)')
     parser.add_argument('--ram-reserve-gib', type=float, default=8)
+    parser.add_argument('--language-slots', default='auto', choices=['auto', '2', '4'],
+                        help='llama.cpp slots per language model (auto: 4 on a Mac with at least 32 GiB, else 2)')
     parser.add_argument('--omlx', help='oMLX executable; serves the language pool from official Granite MLX builds instead of llama.cpp')
     args = parser.parse_args()
     profile = args.profile or args.host
@@ -126,14 +140,18 @@ def main():
         manifest = (receipts / f'{profile}-llama-runtime.json' if args.profile else
                     ROOT / ('locks/macos-llama-runtime.json' if args.host == 'mac' else 'locks/hx-vulkan-runtime.json'))
         write(manifest, dict(backend_build=build, executable=llama, executable_sha256=digest, version_output=version, files=runtime_files))
+        slots = (int(args.language_slots) if args.language_slots != 'auto' else
+                 4 if args.host == 'mac' and device == 'metal' and host_ram() >= 32*GIB else LANGUAGE_SLOTS)
         preset = ROOT / f'configs/{profile}-models.ini'
-        preset.write_text('\n'.join(f'[granite-4.2-{size}]\nmodel = {models_dir}/granite-4.2-{size}-Q4_K_M.gguf\n' for size in sizes))
+        # Per-model values apply only when the command line leaves -c and -np out (llama.cpp 11669).
+        preset.write_text('\n'.join(f'[granite-4.2-{size}]\nmodel = {models_dir}/granite-4.2-{size}-Q4_K_M.gguf\n'
+                                    f'parallel = {slots}\nctx-size = {slots * SLOT_CONTEXT}\n' for size in sizes))
         command = [llama, '--models-preset', str(preset), '--models-max', '1', '--no-models-autoload',
-                   '--host', '127.0.0.1', '--port', str(args.port + 11), '-c', str(LANGUAGE_SLOTS * SLOT_CONTEXT), '-np', str(LANGUAGE_SLOTS), '-ngl', '0' if device == 'cpu' else '99',
+                   '--host', '127.0.0.1', '--port', str(args.port + 11), '-ngl', '0' if device == 'cpu' else '99',
                    '--jinja', '--reasoning-format', 'deepseek', '--metrics']
         if backend_device:
             command += ['--device', backend_device]
-        for size, budget in [(s, b) for s, b in [('3b', 5*GIB), ('8b', 9*GIB)] if s in sizes]:
+        for size, budget in [(s, LLAMA_BUDGETS[slots][s]) for s in ('3b', '8b') if s in sizes]:
             alias = f'granite-4.2-{size}'
             info = json.loads((ROOT / f'reports/gguf-{size}-files.json').read_text())
             name = f'{alias}-Q4_K_M.gguf'
@@ -146,7 +164,7 @@ def main():
                 context_tokens=SLOT_CONTEXT,
                 pid_registry=args.pid_registry,
                 artifacts={str(models_dir / name): file['lfs']['sha256'], **runtime_files},
-                load_timeout_seconds=300, max_concurrency=LANGUAGE_SLOTS, keep_warm=False))
+                load_timeout_seconds=300, max_concurrency=slots, keep_warm=False))
     if args.native:
         python = ROOT / '.venv-native/bin/python'
         packages = subprocess.check_output([str(python), '-c',
