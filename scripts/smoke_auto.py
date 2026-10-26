@@ -426,6 +426,14 @@ def main():
               status == 200 and body.get('model') == T17 and route.get('modality') == 'speech_synthesis' and route.get('model') == T17)
         status, head, body, route = speak(r, {'x-granite-hop': '1'})
         check('auto speech is resolved by the first node only', status == 400 and head.get('x-granite-error-code') == 'auto_not_forwardable')
+        def cut(text):
+            data = json.dumps(dict(model=T17, input=text, response_format='wav')).encode()
+            req = urllib.request.Request(f'http://127.0.0.1:{r.port}/v1/audio/speech', data,
+                                         {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                return resp.status, resp.headers.get('x-granite-truncated')
+        check('a reply the speech worker cut at its cache length reaches the client marked x-granite-truncated',
+              cut('TRUNCATE this') == (200, 'true') and cut('hello') == (200, None))
     finally:
         r.close()
     r = Router('unified', models=(B3, T17, T06), auto=voice)

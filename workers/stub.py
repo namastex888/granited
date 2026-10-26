@@ -49,6 +49,8 @@ def streaming(handler):
                 self.send_response(status)
                 self.send_header('Content-Type', 'audio/wav')
                 self.send_header('Content-Length', str(len(data)))
+                if isinstance(data, Cut):
+                    self.send_header('X-Granite-Truncated', 'true')
                 self.end_headers()
                 self.wfile.write(data)
                 return
@@ -72,6 +74,10 @@ def streaming(handler):
                 else:
                     self.wfile.write(event(e))
     return Handler
+
+
+class Cut(bytes):
+    """WAV bytes from a synthesis the worker reports as cut short by its cache."""
 
 
 def silence(seconds, rate=24000):
@@ -176,7 +182,7 @@ class Stub:
             return dict(model=self.args.model, text=f'stub heard {len(audio)} bytes', audio_duration_seconds=seconds)
         if path == '/v1/audio/speech' and self.args.family == 'speech_synthesis':
             if data.get('response_format') == 'wav':
-                return silence(0.75)
+                return Cut(silence(0.75)) if 'TRUNCATE' in data['input'] else silence(0.75)
             return dict(model=self.args.model, stub_spoke=len(data['input']), references=len(data.get('references') or []))
         raise Unsupported(f'Stub does not implement {path}')
 

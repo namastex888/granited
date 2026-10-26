@@ -63,8 +63,23 @@ def load(args):
     if args.runtime == 'faster':
         from faster_qwen3_tts import FasterQwen3TTS
 
-        return FasterQwen3TTS.from_pretrained(args.weights, device=args.device, dtype=dtype, max_seq_len=args.max_seq_len)
+        engine = FasterQwen3TTS.from_pretrained(args.weights, device=args.device, dtype=dtype, max_seq_len=args.max_seq_len)
+        graph, prefill_kv = engine.talker_graph, engine.talker_graph.prefill_kv
+        engine.last_prefill = None
+
+        def record_prefill(past_key_values):
+            engine.last_prefill = prefill_kv(past_key_values)
+            return engine.last_prefill
+        graph.prefill_kv = record_prefill
+        return engine
     return Qwen3TTSModel.from_pretrained(args.weights, device_map=args.device, dtype=dtype)
+
+
+def truncated(engine, args, samples):
+    """The library stops at max_seq_len without an error: prefill + one position per generated frame
+    (12.5 per second, 1920 samples at 24 kHz) reaching max_seq_len - 1 means the reply was cut."""
+    prefill = getattr(engine, 'last_prefill', None)
+    return prefill is not None and prefill + samples // SAMPLES_PER_FRAME >= args.max_seq_len - 1
 
 
 def faster_prompt(engine, ref_audio, ref_text):
@@ -129,16 +144,19 @@ def stream(model, args, body, emit):
 
     text, ref_audio, ref_text, options = prepare(model, args, body)
     if args.runtime == 'faster':
-        start, first, frames = time.perf_counter(), None, 0
+        start, first, frames, samples = time.perf_counter(), None, 0, 0
         prompt = faster_prompt(model, ref_audio, ref_text)
         for chunk, _rate, _timing in model.generate_voice_clone_streaming(
                 text=text, language='Auto', voice_clone_prompt=prompt, ref_text=ref_text,
                 chunk_size=args.chunk_frames, **options):
-            emit((np.clip(np.asarray(chunk, dtype=np.float32).reshape(-1), -1, 1) * 32767).astype('<i2').tobytes())
+            pcm = np.asarray(chunk, dtype=np.float32).reshape(-1)
+            samples += pcm.size
+            emit((np.clip(pcm, -1, 1) * 32767).astype('<i2').tobytes())
             first = first or time.perf_counter() - start
             frames += 1
         return dict(first_audio_ms=round((first or 0) * 1000, 1),
-                    synthesis_ms=round((time.perf_counter() - start) * 1000, 1), frames=frames)
+                    synthesis_ms=round((time.perf_counter() - start) * 1000, 1), frames=frames,
+                    truncated=truncated(model, args, samples))
     prompt = model.create_voice_clone_prompt(ref_audio=ref_audio, ref_text=ref_text)
     ref_code = prompt[0].ref_code
     eos = model.model.config.talker_config.codec_eos_token_id
@@ -213,8 +231,9 @@ def synthesize(model, args, body):
         wavs, out_rate = model.generate_voice_clone(text=text, ref_audio=ref_audio, ref_text=ref_text, **options)
     elapsed = time.perf_counter() - start
     data, seconds = wav_bytes(out_rate, wavs[0])
+    cut = args.runtime == 'faster' and truncated(model, args, len(wavs[0]))
     return data, dict(synthesis_ms=round(elapsed * 1000, 1), audio_ms=round(seconds * 1000, 1),
-                      rtf=round(elapsed / seconds, 3) if seconds else None)
+                      rtf=round(elapsed / seconds, 3) if seconds else None, truncated=cut)
 
 
 def serve(args, model):
@@ -266,13 +285,16 @@ def serve(args, model):
                 return self.error(500, 'inference_failed', type(e).__name__)
             finally:
                 lock.release()
-            self.reply(200, data, 'audio/wav', [(
-                'Server-Timing', f'synthesis;dur={timing["synthesis_ms"]}, audio;dur={timing["audio_ms"]}, rtf;desc="{timing["rtf"]}"')])
+            headers = [('Server-Timing', f'synthesis;dur={timing["synthesis_ms"]}, audio;dur={timing["audio_ms"]}, '
+                                         f'rtf;desc="{timing["rtf"]}"')]
+            if timing['truncated']:
+                headers.append(('X-Granite-Truncated', 'true'))
+            self.reply(200, data, 'audio/wav', headers)
 
         def streamed(self, body, lock):
             """Chunked transfer: the header now, PCM as it is decoded. An error after the header can
             only end the stream early; it is logged by type, never with the request's content."""
-            started = False
+            started, cut = False, False
 
             def emit(pcm):
                 nonlocal started
@@ -280,6 +302,7 @@ def serve(args, model):
                     self.send_response(200)
                     self.send_header('Content-Type', 'audio/wav')
                     self.send_header('Transfer-Encoding', 'chunked')
+                    self.send_header('Trailer', 'X-Granite-Truncated')
                     self.end_headers()
                     self.chunk(wav_header(SAMPLE_RATE))
                     started = True
@@ -287,8 +310,9 @@ def serve(args, model):
 
             try:
                 timing = stream(model, args, body, emit)
+                cut = bool(timing.get('truncated'))
                 print(f'streamed: first audio {timing["first_audio_ms"]} ms, total {timing["synthesis_ms"]} ms, '
-                      f'{timing["frames"]} frames', file=sys.stderr, flush=True)
+                      f'{timing["frames"]} frames, truncated {cut}', file=sys.stderr, flush=True)
             except ValueError as e:
                 if not started:
                     return self.error(400, 'invalid_schema', str(e))
@@ -299,7 +323,8 @@ def serve(args, model):
             finally:
                 lock.release()
             if started:
-                self.wfile.write(b'0\r\n\r\n')
+                # The headers left before generation ended, so a cut reply is reported in the trailer.
+                self.wfile.write(b'0\r\nX-Granite-Truncated: true\r\n\r\n' if cut else b'0\r\n\r\n')
                 self.wfile.flush()
 
         def chunk(self, data):
@@ -314,6 +339,7 @@ def serve(args, model):
 
 
 SAMPLE_RATE = 24000
+SAMPLES_PER_FRAME = 1920  # the 12.5 Hz codec at 24 kHz
 
 
 def main():

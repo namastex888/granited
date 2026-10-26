@@ -2010,6 +2010,7 @@ async fn forward_response(
         "x-granite-model-alias",
         "x-granite-reasoning-tokens",
         "x-granite-context-tokens",
+        "x-granite-truncated",
         "server-timing",
     ] {
         if let Some(value) = headers.get(name) {
