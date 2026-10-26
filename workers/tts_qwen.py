@@ -45,9 +45,10 @@ def parse():
     p.add_argument('--runtime', default='reference', choices=['reference', 'faster'])
     p.add_argument('--chunk-frames', type=int, default=4, help='faster runtime: frames per streamed chunk')
     # Talker positions one request may use: the reference's codec frames + 9, then one per generated
-    # frame (12.6 per spoken second). 2112 = (the longest mood reference, 10.1 s padded, plus a
-    # 2000-character reply, 123 s) x 1.25, measured in run ryzen-tts-cuda-seq-2026-10-26.
-    p.add_argument('--max-seq-len', type=int, default=2112, help='faster runtime: static cache length')
+    # frame (12.5 per spoken second). 1152 = (the longest mood reference, 136 positions, plus a reply
+    # at --max-input-chars 1000, 778 frames) x 1.25, rounded up to 64 (team-lead, 2026-10-26). The
+    # library stops generating at this length without an error, so the input cap must stay in step.
+    p.add_argument('--max-seq-len', type=int, default=1152, help='faster runtime: static cache length')
     args = p.parse_args()
     if args.runtime == 'faster' and args.device != 'cuda':
         p.error('--runtime faster captures CUDA graphs; it needs --device cuda')
