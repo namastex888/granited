@@ -10,6 +10,7 @@ import base64
 import concurrent.futures
 import json
 import os
+import signal
 from pathlib import Path
 import socket
 import subprocess
@@ -359,8 +360,16 @@ def main():
         status, head, _, _, _ = a.chat(model=B3, reasoning_effort='off', temperature=0)
         check('a dead peer is skipped: the next host serves instead of a 502',
               served_by_peer and status == 200 and head.get('x-granite-host') == 'node-a')
+        # A killed manager leaves its worker running; its ledger names exactly that process.
+        ledger = list((Path(b.state.name) / 'owned').glob('*.pid'))
+        check('a killed manager leaves a ledger entry naming its orphaned worker', len(ledger) == 1)
     finally:
         a.close()
+        for entry in (Path(b.state.name) / 'owned').glob('*.pid'):
+            try:
+                os.killpg(int(entry.read_text().split('\t')[0]), signal.SIGTERM)
+            except (ProcessLookupError, ValueError):
+                pass
         b.state.cleanup()
 
     # /v1/devices: per-device model states in placement's words and the best tier that fits.

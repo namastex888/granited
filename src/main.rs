@@ -41,6 +41,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .open(&lock_path)?;
     lock.try_lock()
         .map_err(|e| format!("state directory already owned by another manager: {e}"))?;
+    // A manager killed outright leaves its workers running; this one owns the state directory now
+    // (the lock above), so it stops exactly the processes the ledger names before placing anything.
+    for line in process::reap_orphans(std::path::Path::new(&format!("{}/owned", config.state_dir)))
+    {
+        tracing::warn!("{line}");
+    }
     let workers = lifecycle::new_workers(config.deployments.clone());
     let initial = tokio::task::spawn_blocking(hardware::collect).await?;
     let service = Arc::new(lifecycle::Service {

@@ -906,6 +906,7 @@ impl Service {
             command,
             worker.spec.pid_registry.clone(),
             worker.spec.model.clone(),
+            Some(format!("{}/owned/{}.pid", self.config.state_dir, worker.spec.model).into()),
         )
         .map_err(|e| failure("worker_spawn", e.to_string()))?;
         tracing::info!(

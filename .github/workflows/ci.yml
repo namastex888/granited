@@ -20,6 +20,7 @@ jobs:
       - run: python3 scripts/smoke_stub.py
       - run: python3 scripts/smoke_fallback.py
       - run: python3 scripts/smoke_auto.py
+      - run: python3 scripts/smoke_mesh.py
       - run: python3 scripts/readme_gate.py
       - run: PYTHONPATH=benchmarks python3 -m unittest discover -s benchmarks/tests
       - run: python3 -m py_compile scripts/*.py workers/*.py

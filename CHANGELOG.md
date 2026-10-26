@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- A manager killed outright (crash, OOM, SIGKILL) no longer leaves its node unable to serve: its orphaned workers held their ports, and the restarted manager refused them with `worker_port_in_use`. It now reaps exactly the workers its own ledger names. `scripts/smoke_mesh.py` covers a 3-node mesh in which one node dies and rejoins.
 - A transcription that one node forwards to a peer is served. The peer's `/v1/audio/transcriptions` now also takes the JSON form `{model, audio_base64}`; before, it took only multipart and refused the forwarded request with 400 `Invalid boundary`.
 
 ### Added

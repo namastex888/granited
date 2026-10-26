@@ -1,6 +1,7 @@
 use std::{
     fs::OpenOptions,
     io::{self, Write},
+    path::{Path, PathBuf},
     process::Command as StdCommand,
     time::Duration,
 };
@@ -18,6 +19,49 @@ pub struct OwnedProcess {
     registry: Option<String>,
     model: String,
     children: Vec<RecordedPid>,
+    /// `state_dir/owned/<model>.pid`: this worker's PID and start time while it runs. A manager
+    /// killed outright leaves it behind, and the next manager on the same state directory (which
+    /// holds that directory's exclusive lock) stops exactly that process group, and nothing else.
+    ledger: Option<PathBuf>,
+}
+
+/// Stop the workers a previous manager on this state directory left running when it was killed:
+/// only processes whose PID and start time match a ledger entry, so a reused PID is never touched.
+/// Returns one line per entry for the log.
+pub fn reap_orphans(dir: &Path) -> Vec<String> {
+    let mut report = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return report;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut fields = text.trim_end().splitn(2, '\t');
+        let pid = fields.next().and_then(|p| p.parse::<u32>().ok());
+        let start = fields.next().map(str::to_owned);
+        let name = path
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match (pid, start) {
+            (Some(pid), Some(start)) if start_identity(pid).as_deref() == Some(start.as_str()) => {
+                signal(-(pid as i32), libc::SIGTERM);
+                for _ in 0..50 {
+                    if start_identity(pid).as_deref() != Some(start.as_str()) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if start_identity(pid).as_deref() == Some(start.as_str()) {
+                    signal(-(pid as i32), libc::SIGKILL);
+                }
+                report.push(format!("{name}: stopped orphaned worker group {pid}"));
+            }
+            _ => report.push(format!("{name}: stale entry; process already gone")),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+    report
 }
 
 fn start_identity(pid: u32) -> Option<String> {
@@ -46,20 +90,37 @@ impl OwnedProcess {
         mut command: Command,
         registry: Option<String>,
         model: String,
+        ledger: Option<PathBuf>,
     ) -> io::Result<Self> {
         #[cfg(unix)]
         command.process_group(0);
         let child = command.spawn()?;
-        let process = Self {
+        let mut process = Self {
             child,
             registry,
             model,
             children: Vec::new(),
+            ledger: None,
         };
         if let Some(pid) = process.id() {
             process.record(pid, "router")?;
+            if let Some(path) = ledger {
+                let start = start_identity(pid)
+                    .ok_or_else(|| io::Error::other("spawned worker has no start time"))?;
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                std::fs::write(&path, format!("{pid}\t{start}\n"))?;
+                process.ledger = Some(path);
+            }
         }
         Ok(process)
+    }
+
+    fn clear_ledger(&mut self) {
+        if let Some(path) = self.ledger.take() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     pub fn id(&self) -> Option<u32> {
@@ -162,6 +223,7 @@ impl OwnedProcess {
             self.child.kill().await?;
         }
         self.child.wait().await?;
+        self.clear_ledger();
         for known in &self.children {
             if start_identity(known.pid).as_deref() == Some(&known.start) {
                 tracing::warn!(
@@ -202,5 +264,63 @@ impl Drop for OwnedProcess {
                 signal(known.pid as i32, libc::SIGKILL);
             }
         }
+        self.clear_ledger();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reaping_stops_only_the_recorded_process() {
+        let dir = std::env::temp_dir().join(format!("granited-reap-{}", uuid::Uuid::new_v4()));
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let worker =
+            OwnedProcess::spawn(command, None, "m".into(), Some(dir.join("m.pid"))).unwrap();
+        let pid = worker.id().unwrap();
+        let start = start_identity(pid).unwrap();
+        // A manager killed outright never runs Drop: the worker and its ledger entry survive it.
+        std::mem::forget(worker);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("m.pid")).unwrap(),
+            format!("{pid}\t{start}\n")
+        );
+        // An entry whose start time differs (a reused PID) is dropped without a signal.
+        std::fs::rename(dir.join("m.pid"), dir.join("held.pid")).unwrap();
+        std::fs::write(
+            dir.join("other.pid"),
+            format!("{pid}\tMon Jan  1 00:00:00 2001\n"),
+        )
+        .unwrap();
+        std::fs::remove_file(dir.join("held.pid")).unwrap();
+        let report = reap_orphans(&dir);
+        assert_eq!(
+            report,
+            vec!["other: stale entry; process already gone".to_owned()]
+        );
+        assert_eq!(start_identity(pid).as_deref(), Some(start.as_str()));
+        // The matching entry stops exactly that process group.
+        std::fs::write(dir.join("m.pid"), format!("{pid}\t{start}\n")).unwrap();
+        assert_eq!(
+            reap_orphans(&dir),
+            vec![format!("m: stopped orphaned worker group {pid}")]
+        );
+        // In a real crash init adopts and collects the orphan; here the test is its parent.
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid as i32, &mut status, 0) },
+            pid as i32
+        );
+        assert!(
+            libc::WIFSIGNALED(status),
+            "the recorded worker was stopped by a signal"
+        );
+        assert!(
+            std::fs::read_dir(&dir).unwrap().next().is_none(),
+            "every entry is removed"
+        );
+        let _ = std::fs::remove_dir(&dir);
     }
 }
