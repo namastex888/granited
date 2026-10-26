@@ -134,9 +134,27 @@ def request(base, record, timeout, token):
     return result, time.perf_counter() - start, first
 
 
+def process_memory(pid):
+    """Bytes held by a worker and its children (llama-server's router mode runs the model in a child).
+    macOS: phys_footprint, which counts Metal/unified allocations that RSS misses; elsewhere RSS."""
+    pids = [str(pid)] + subprocess.run(['pgrep', '-P', str(pid)], capture_output=True, text=True).stdout.split()
+    total = 0
+    for p in pids:
+        if sys.platform == 'darwin':
+            out = subprocess.run(['footprint', '-p', p], capture_output=True, text=True).stdout
+            line = next((l for l in out.splitlines() if 'phys_footprint:' in l), '')
+            parts = line.split()
+            if len(parts) >= 3:
+                total += float(parts[1]) * {'KB': 2**10, 'MB': 2**20, 'GB': 2**30}.get(parts[2], 1)
+        else:
+            out = subprocess.run(['ps', '-o', 'rss=', '-p', p], capture_output=True, text=True).stdout.strip()
+            total += int(out) * 1024 if out.isdigit() else 0
+    return int(total)
+
+
 class Sampler:
     """Polls granited's /internal/hardware while requests run: free RAM, swap, memory stall,
-    accelerator memory and each managed worker's resident memory (via ps, so the benchmark must run
+    accelerator memory and each managed worker's memory with its children (process_memory; run it
     on the measured host). Sets `alarm` when the host is under memory pressure so the run stops."""
 
     def __init__(self, url, token, interval, max_stall):
@@ -148,12 +166,7 @@ class Sampler:
         req = urllib.request.Request(self.url + '/internal/hardware', headers={'Authorization': 'Bearer ' + (self.token or '')})
         with urllib.request.urlopen(req, timeout=10) as r:
             hw = json.load(r)
-        rss = {}
-        for w in hw.get('managed_workers', []):
-            if w.get('pid'):
-                out = subprocess.run(['ps', '-o', 'rss=', '-p', str(w['pid'])], capture_output=True, text=True).stdout.strip()
-                if out.isdigit():
-                    rss[w['model']] = int(out) * 1024
+        rss = {w['model']: process_memory(w['pid']) for w in hw.get('managed_workers', []) if w.get('pid')}
         accel = sum(v for a in hw.get('accelerators', []) for k, v in a.items()
                     if isinstance(v, (int, float)) and 'used' in k and 'bytes' in k)
         return dict(t=time.time(), ram_available_bytes=(hw.get('ram') or {}).get('available_bytes'),
@@ -190,7 +203,7 @@ class Sampler:
         return dict(samples=len(good), failed_samples=len(self.samples) - len(good), interval_s=self.interval,
                     min_ram_available_bytes=pick('ram_available_bytes', min), max_swap_used_bytes=pick('swap_used_bytes', max),
                     max_memory_stall_percent=pick('memory_stall_percent', max),
-                    max_accelerator_used_bytes=pick('accelerator_used_bytes', max), peak_worker_rss_bytes=peak, alarm=self.alarm)
+                    max_accelerator_used_bytes=pick('accelerator_used_bytes', max), peak_worker_memory_bytes=peak, alarm=self.alarm)
 
 
 def percentile(values, q):

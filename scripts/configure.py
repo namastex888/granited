@@ -22,8 +22,9 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-# One source for the language pool's parallelism: llama.cpp splits -c across -np slots, granited
-# admits max_concurrency requests, and each slot must hold context_tokens. Change these together.
+# One source for the language pool's parallelism: llama.cpp splits -c across -np slots, oMLX runs
+# --max-concurrent-requests (default 8), granited admits max_concurrency requests, and each slot must
+# hold context_tokens. Change these together.
 LANGUAGE_SLOTS = 2
 SLOT_CONTEXT = 8192
 
@@ -69,7 +70,10 @@ def main():
                   ram_reserve_bytes=int(args.ram_reserve_gib*GIB), accelerator_reserve_bytes=GIB, deployments=[], peers=[])
     if sizes and args.omlx:
         version = subprocess.check_output([args.omlx, '--version'], text=True).strip().split()[-1]
-        for offset, (size, budget) in enumerate([(s, b) for s, b in [('3b', 4*GIB), ('8b', 7*GIB)] if s in sizes]):
+        # Measured peak phys_footprint at LANGUAGE_SLOTS concurrent ~6.5k-token prompts on an M5 Pro, plus
+        # 15%: 3B 5.07 GB, 8B 10.24 GB (reports/2026-10-25-council-performance-concurrency.md). oMLX holds
+        # weights and per-request buffers in counted memory, so it needs more than llama.cpp's mmap.
+        for offset, (size, budget) in enumerate([(s, b) for s, b in [('3b', int(5.5*GIB)), ('8b', 11*GIB)] if s in sizes]):
             alias = f'granite-4.2-{size}'
             info = json.loads((ROOT / f'reports/mlx-{size}-files.json').read_text())
             weights = models_dir / 'mlx' / info['id'].split('/')[1]
@@ -83,7 +87,10 @@ def main():
             config['deployments'].append(dict(model=alias, backend='omlx', base_url=f'http://127.0.0.1:{port}',
                 revision=info['sha'], artifact_repo=info['id'], backend_model=alias,
                 command=[args.omlx, 'serve', '--model-dir', str(serve), '--base-path', str(ROOT / 'state/omlx' / alias),
-                         '--host', '127.0.0.1', '--port', str(port), '--headless', '--no-hf-cache'],
+                         '--host', '127.0.0.1', '--port', str(port), '--headless', '--no-hf-cache',
+                         '--max-concurrent-requests', str(LANGUAGE_SLOTS),
+                         # The prefix cache on disk defaults to 100 GB per model; 2.9 GB after one benchmark.
+                         '--paged-ssd-cache-max-size', '10GB'],
                 env={'OMLX_HEADLESS': '1'},
                 prefetch_command=[shutil.which('hf') or str(ROOT / '.venv-native/bin/hf'), 'download', info['id'],
                                   '--revision', info['sha'], '--local-dir', str(weights)],
