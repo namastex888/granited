@@ -624,9 +624,9 @@ def main():
         # Summed over buckets, so a run that crosses a 15-minute boundary still adds up.
         total = {}
         for bucket in activity(r)[1]['hosts'][0]['buckets']:
-            t = total.setdefault((bucket['model'], bucket['capability']), dict(succeeded=0, failed=0, cancelled=0, units={}, units_unavailable=0))
-            for k in ('succeeded', 'failed', 'cancelled', 'units_unavailable'):
-                t[k] += bucket[k]
+            t = total.setdefault((bucket['model'], bucket['capability']), dict(succeeded=0, failed=0, rejected=0, cancelled=0, units={}, units_unavailable=0))
+            for k in ('succeeded', 'failed', 'rejected', 'cancelled', 'units_unavailable'):
+                t[k] += bucket.get(k, 0)
             for k, v in bucket['units'].items():
                 t['units'][k] = t['units'].get(k, 0) + v
         return total
@@ -649,6 +649,7 @@ def main():
                post(r, '/v1/chat/completions', say('BREAK', stream=True))[0],
                post(r, '/v1/chat/completions', say('BIGJSON'))[0]]
         stream_error = post(r, '/v1/chat/completions', say('SSEERROR', stream=True))[0]
+        rejected = post(r, '/v1/chat/completions', say('REJECT'))[0]
         # A client that leaves after the first event: the engine is still pausing, so the job is cancelled.
         conn = http.client.HTTPConnection('127.0.0.1', r.port, timeout=30)
         conn.request('POST', '/v1/chat/completions', json.dumps(say('DRIP', stream=True)),
@@ -670,7 +671,7 @@ def main():
         j = jobs(r)
         check('every capability that ran is a succeeded job with its native units',
               ok == [200] * 8
-              and j[(SWITCH, 'adapters')] == dict(succeeded=1, failed=0, cancelled=0, units_unavailable=0,
+              and j[(SWITCH, 'adapters')] == dict(succeeded=1, failed=0, rejected=0, cancelled=0, units_unavailable=0,
                                                  units=dict(questions_answered=2, input_tokens=20))
               and j[(SPEECH, 'transcription')]['units'] == dict(audio_seconds=1.0) and j[(SPEECH, 'transcription')]['succeeded'] == 2
               and j[('qwen3-tts-0.6b-base', 'speech_synthesis')]['units'] == dict(audio_seconds=0.75)
@@ -681,6 +682,8 @@ def main():
               j[(B3, 'chat')]['succeeded'] == 3 and j[(B3, 'chat')]['units'] == dict(prompt_tokens=2, output_tokens=2))
         check('a backend error and a stream broken midway are failed; a client that left is cancelled',
               bad[0] == 500 and bad[1] in (200, -1) and stream_error == 200 and j[(B3, 'chat')]['failed'] == 3 and j[(B3, 'chat')]['cancelled'] == 2)
+        check('a reply the worker rejects as malformed (4xx) is rejected, not failed',
+              rejected == 400 and j[(B3, 'chat')]['rejected'] == 1 and j[(B3, 'chat')]['failed'] == 3)
         check('a reply past the read cap is a succeeded job with its units unavailable',
               bad[2] == 200 and j[(B3, 'chat')]['units_unavailable'] == 1)
         status, report = activity(r)
@@ -688,7 +691,7 @@ def main():
         check('/internal/activity names its bucket size, retention and this process\'s coverage',
               report['bucket_seconds'] == 900 and report['retention_days'] == 35 and host.get('host') == 'auto-smoke'
               and len(host['coverage']) == 1 and host['truncated'] is False
-              and all(b['start_unix_ms'] % 900000 == 0 for b in host['buckets']))
+              and all(b['start_unix_ms'] % 900000 == 0 and 'rejected' in b for b in host['buckets']))
         now = int(time.time() * 1000)
         check('/internal/activity is admin-only and bounds its window to 35 days',
               activity(r, key=API)[0] == 401

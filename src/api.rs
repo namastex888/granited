@@ -1954,9 +1954,17 @@ async fn forward_response(
     let status = upstream.status();
     let headers = upstream.headers().clone();
     if !status.is_success() {
-        // The backend ran the request and failed it.
+        // A 4xx is the backend refusing the request as malformed; a timeout (408) or a full queue
+        // (429) is the backend failing to serve it, like a 5xx.
         if let Some(mut meter) = meter {
-            meter.settle(activity::Outcome::Failed);
+            let refused = status.is_client_error()
+                && status != reqwest::StatusCode::REQUEST_TIMEOUT
+                && status != reqwest::StatusCode::TOO_MANY_REQUESTS;
+            meter.settle(if refused {
+                activity::Outcome::Rejected
+            } else {
+                activity::Outcome::Failed
+            });
         }
         let bytes = upstream.bytes().await.unwrap_or_default();
         let detail = serde_json::from_slice::<Value>(&bytes).unwrap_or_else(

@@ -26,7 +26,10 @@ const MILLI_UNITS: [&str; 1] = ["audio_seconds"];
 pub enum Outcome {
     /// The units the reply reported, or `None` when they could not be read.
     Succeeded(Option<Vec<(&'static str, f64)>>),
+    /// The backend ran the request and failed it.
     Failed,
+    /// The backend refused the request as malformed (a 4xx other than 408 and 429).
+    Rejected,
     Cancelled,
 }
 
@@ -34,6 +37,7 @@ pub enum Outcome {
 struct Counts {
     succeeded: u64,
     failed: u64,
+    rejected: u64,
     cancelled: u64,
     units: BTreeMap<String, u64>,
     units_unavailable: u64,
@@ -344,7 +348,7 @@ impl Counts {
             })
             .collect();
         json!({"start_unix_ms":key.0,"model":key.1,"capability":key.2,"succeeded":self.succeeded,
-            "failed":self.failed,"cancelled":self.cancelled,"units":units,
+            "failed":self.failed,"rejected":self.rejected,"cancelled":self.cancelled,"units":units,
             "units_unavailable":self.units_unavailable})
     }
 
@@ -368,6 +372,11 @@ impl Counts {
         let counts = Counts {
             succeeded: n("succeeded")?,
             failed: n("failed")?,
+            // Files written before rejected was counted have no such key.
+            rejected: match value.get("rejected") {
+                None => 0,
+                Some(_) => n("rejected")?,
+            },
             cancelled: n("cancelled")?,
             units,
             units_unavailable: n("units_unavailable")?,
@@ -523,6 +532,7 @@ impl Activity {
                 counts.units_unavailable = counts.units_unavailable.saturating_add(1);
             }
             Outcome::Failed => counts.failed = counts.failed.saturating_add(1),
+            Outcome::Rejected => counts.rejected = counts.rejected.saturating_add(1),
             Outcome::Cancelled => counts.cancelled = counts.cancelled.saturating_add(1),
         }
         state.dirty = true;
@@ -876,6 +886,7 @@ mod tests {
         a.record_at("m", "chat", chat(5.0), T + 1);
         a.record_at("m", "chat", Outcome::Failed, T + 2);
         a.record_at("m", "chat", Outcome::Cancelled, T + 3);
+        a.record_at("m", "chat", Outcome::Rejected, T + 3);
         a.record_at(
             "s",
             "speech_synthesis",
@@ -900,6 +911,13 @@ mod tests {
         );
         assert_eq!(after["buckets"][1]["units"], json!({"audio_seconds":1.25}));
         assert_eq!(after["buckets"][1]["units_unavailable"], 1);
+        assert_eq!(
+            (
+                &after["buckets"][0]["failed"],
+                &after["buckets"][0]["rejected"]
+            ),
+            (&json!(1), &json!(1))
+        );
         // The earlier process's span, then this one's.
         let coverage = after["coverage"].as_array().unwrap();
         assert_eq!(coverage.len(), 2);
@@ -933,6 +951,21 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_millis(50));
         assert_eq!(seen["buckets"][0]["succeeded"], 1);
         drop(writing);
+    }
+
+    #[test]
+    fn a_file_written_before_rejected_was_counted_loads_with_none_rejected() {
+        let dir = temp_dir("before-rejected");
+        let old = json!({"version":1,"coverage":[{"start_unix_ms":T,"end_unix_ms":T + 5}],
+            "buckets":[{"start_unix_ms":T,"model":"m","capability":"chat","succeeded":2,"failed":1,
+                "cancelled":0,"units":{},"units_unavailable":0}]});
+        std::fs::write(dir.join(FILE), old.to_string()).unwrap();
+        let a = Activity::open_at(dir.join(FILE), T + 10);
+        let row = &a.query_at(T, T + BUCKET_MS, T + 20)["buckets"][0];
+        assert_eq!(
+            (&row["succeeded"], &row["failed"], &row["rejected"]),
+            (&json!(2), &json!(1), &json!(0))
+        );
     }
 
     #[test]

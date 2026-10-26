@@ -145,6 +145,8 @@ class Stub:
                         parts=[p.get('type') for p in parts], texts=[p['text'] for p in parts if p.get('type') == 'text'])
             if 'FAIL' in text:
                 raise RuntimeError('stub failure on request')
+            if 'REJECT' in text:
+                raise ValueError('stub rejects this input')
             if 'BIGJSON' in text:
                 # Past the router's 8 MiB read cap: served, with units unread.
                 seen['padding'] = 'x' * (9 << 20)
