@@ -7,9 +7,15 @@ There is no default voice: every request carries 1 to 4 references (audio and it
 the first is the voice. Reference audio is decoded here from base64 and handed to the model as a
 waveform. It is never passed as a string, because qwen-tts reads a string as a file path or a URL.
 It stays in memory for that one request and is never written, cached or logged.
+
+With "stream": true the reply is a WAV header with an unknown length, then 16-bit PCM as it is
+generated: each step's codes are caught by a hook on the talker and decoded in small chunks, each
+with the preceding frames as left context (the codec decoder is causal).
 """
 import argparse
 import base64
+import queue
+import struct
 import io
 import json
 import sys
@@ -64,7 +70,7 @@ def wav_bytes(rate, audio):
     return buf.getvalue(), len(pcm) / rate
 
 
-def synthesize(model, args, body):
+def prepare(model, args, body):
     import torch
 
     text = body.get('input', '')
@@ -77,8 +83,84 @@ def synthesize(model, args, body):
     if body.get('seed') is not None:
         torch.manual_seed(int(body['seed']))
     options = {k: body[k] for k in ('temperature', 'top_p', 'max_new_tokens') if body.get(k) is not None}
+    return text, (audio, rate), refs[0]['text'], options
+
+
+FIRST_FRAMES, CHUNK_FRAMES, LEFT_CONTEXT = 4, 12, 25
+
+
+def stream(model, args, body, emit):
+    """Generate on a thread; decode codes as they arrive and pass PCM bytes to `emit`."""
+    import torch
+
+    text, ref_audio, ref_text, options = prepare(model, args, body)
+    prompt = model.create_voice_clone_prompt(ref_audio=ref_audio, ref_text=ref_text)
+    ref_code = prompt[0].ref_code
+    eos = model.model.config.talker_config.codec_eos_token_id
+    codes, done = queue.Queue(), object()
+
+    def hook(_module, _inputs, output):
+        step = output.hidden_states[-1] if output.hidden_states else None
+        if step is not None:
+            codes.put(step[0].detach())
+
+    handle = model.model.talker.register_forward_hook(hook)
+    failure = []
+
+    def run():
+        try:
+            model.generate_voice_clone(text=text, voice_clone_prompt=prompt, **options)
+        except Exception as e:  # reported after the stream ends
+            failure.append(e)
+        finally:
+            codes.put(done)
+
+    worker = threading.Thread(target=run, daemon=True)
     start = time.perf_counter()
-    wavs, out_rate = model.generate_voice_clone(text=text, ref_audio=(audio, rate), ref_text=refs[0]['text'], **options)
+    worker.start()
+    history = [] if ref_code is None else list(ref_code.to('cpu'))
+    base, sent, first, finished = len(history), 0, None, False
+    try:
+        while not finished:
+            item = codes.get()
+            if item is done:
+                finished = True
+            elif int(item[0]) == eos:
+                finished = True
+            else:
+                history.append(item.to('cpu'))
+            ready = len(history) - base - sent
+            if ready < (FIRST_FRAMES if sent == 0 else CHUNK_FRAMES) and not (finished and ready > 0):
+                continue
+            begin = base + sent
+            context = min(LEFT_CONTEXT, begin)
+            window = torch.stack(history[begin - context:])
+            wav, rate = model.model.speech_tokenizer.decode([{'audio_codes': window}])
+            wav = np.asarray(wav[0], dtype=np.float32).reshape(-1)
+            per_frame = len(wav) // len(window)
+            emit((np.clip(wav[context * per_frame:], -1, 1) * 32767).astype('<i2').tobytes())
+            if first is None:
+                first = time.perf_counter() - start
+            sent = len(history) - base
+    finally:
+        handle.remove()
+    worker.join()
+    if failure:
+        raise failure[0]
+    return dict(first_audio_ms=round((first or 0) * 1000, 1), synthesis_ms=round((time.perf_counter() - start) * 1000, 1),
+                frames=sent)
+
+
+def wav_header(rate):
+    """A mono 16-bit WAV header whose sizes say 'unknown', for a stream of PCM."""
+    return (b'RIFF' + struct.pack('<I', 0xFFFFFFFF) + b'WAVEfmt ' + struct.pack('<IHHIIHH', 16, 1, 1, rate, rate * 2, 2, 16)
+            + b'data' + struct.pack('<I', 0xFFFFFFFF))
+
+
+def synthesize(model, args, body):
+    text, ref_audio, ref_text, options = prepare(model, args, body)
+    start = time.perf_counter()
+    wavs, out_rate = model.generate_voice_clone(text=text, ref_audio=ref_audio, ref_text=ref_text, **options)
     elapsed = time.perf_counter() - start
     data, seconds = wav_bytes(out_rate, wavs[0])
     return data, dict(synthesis_ms=round(elapsed * 1000, 1), audio_ms=round(seconds * 1000, 1),
@@ -123,6 +205,8 @@ def serve(args, model):
                 return self.error(400, 'invalid_schema', 'body is not JSON')
             if not lock.acquire(blocking=False):
                 return self.error(429, 'admission_busy', 'one synthesis at a time')
+            if body.get('stream'):
+                return self.streamed(body, lock)
             try:
                 data, timing = synthesize(model, args, body)
             except ValueError as e:
@@ -134,11 +218,51 @@ def serve(args, model):
             self.reply(200, data, 'audio/wav', [(
                 'Server-Timing', f'synthesis;dur={timing["synthesis_ms"]}, audio;dur={timing["audio_ms"]}, rtf;desc="{timing["rtf"]}"')])
 
+        def streamed(self, body, lock):
+            """Chunked transfer: the header now, PCM as it is decoded. An error after the header can
+            only end the stream early; it is logged by type, never with the request's content."""
+            started = False
+
+            def emit(pcm):
+                nonlocal started
+                if not started:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'audio/wav')
+                    self.send_header('Transfer-Encoding', 'chunked')
+                    self.end_headers()
+                    self.chunk(wav_header(SAMPLE_RATE))
+                    started = True
+                self.chunk(pcm)
+
+            try:
+                timing = stream(model, args, body, emit)
+                print(f'streamed: first audio {timing["first_audio_ms"]} ms, total {timing["synthesis_ms"]} ms, '
+                      f'{timing["frames"]} frames', file=sys.stderr, flush=True)
+            except ValueError as e:
+                if not started:
+                    return self.error(400, 'invalid_schema', str(e))
+            except Exception as e:
+                print(f'stream failed: {type(e).__name__}', file=sys.stderr, flush=True)
+                if not started:
+                    return self.error(500, 'inference_failed', type(e).__name__)
+            finally:
+                lock.release()
+            if started:
+                self.wfile.write(b'0\r\n\r\n')
+                self.wfile.flush()
+
+        def chunk(self, data):
+            self.wfile.write(f'{len(data):x}\r\n'.encode() + data + b'\r\n')
+            self.wfile.flush()
+
         def log_message(self, fmt, *a):
             # Request lines only: no body, so no reference audio or text reaches the log.
             print(fmt % a, file=sys.stderr, flush=True)
 
     ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
+
+
+SAMPLE_RATE = 24000
 
 
 def main():

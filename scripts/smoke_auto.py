@@ -58,7 +58,7 @@ class Router:
         deployments = []
         for model in (models or (B8, B3)) + tuple(extra):
             port = free_port()
-            family = 'speech' if model == SPEECH else 'language'
+            family = 'speech' if model == SPEECH else 'speech_synthesis' if model.startswith('qwen3-tts') else 'language'
             deployments.append(dict(
                 model=model, backend=family + '_native', base_url=f'http://127.0.0.1:{port}',
                 revision=REGISTRY[model]['hf_revision'], artifact_repo='stub',
@@ -392,6 +392,62 @@ def main():
         check('/v1/devices: with 0.6B resident on the one device, 1.7B is no_room and 0.6B is recommended',
               tts == {T17: 'no_room', T06: 'warm'} and local['recommended']['speech_synthesis']['model'] == T06)
         check('/v1/devices needs the API key', devices('wrong-key')[0] == 401)
+    finally:
+        r.close()
+
+    # auto on /v1/audio/speech: best voice tier first, never evicting, this node only.
+    def speak(r, headers=None):
+        data = json.dumps(dict(model='auto', input='hello there')).encode()
+        req = urllib.request.Request(f'http://127.0.0.1:{r.port}/v1/audio/speech', data,
+                                     {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json', **(headers or {})})
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                status, head, raw = resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
+        except urllib.error.HTTPError as e:
+            status, head, raw = e.code, {k.lower(): v for k, v in e.headers.items()}, e.read()
+        return status, head, json.loads(raw), json.loads(head.get('x-granite-route', '{}'))
+    voice = dict(enabled=True, speech=True, prefer=dict(chat=[B3], speech_synthesis=[T17, T06]))
+    r = Router('unified', models=(B3, T17, T06), auto=voice)
+    try:
+        status, head, body, route = speak(r)
+        check('auto speech: with nothing loaded, the best tier (1.7B) loads and serves',
+              status == 200 and body.get('model') == T17 and route.get('modality') == 'speech_synthesis' and route.get('model') == T17)
+        status, head, body, route = speak(r, {'x-granite-hop': '1'})
+        check('auto speech is resolved by the first node only', status == 400 and head.get('x-granite-error-code') == 'auto_not_forwardable')
+    finally:
+        r.close()
+    r = Router('unified', models=(B3, T17, T06), auto=voice)
+    try:
+        r.admin(f'/admin/models/{T06}/load')
+        deadline = time.time() + 180
+        while r.states().get(T06) != 'ready' and time.time() < deadline:
+            time.sleep(0.2)
+        status, head, body, route = speak(r)
+        check('auto speech: with 0.6B resident, 0.6B serves warm and 1.7B is never loaded over it',
+              status == 200 and body.get('model') == T06 and route.get('why') == 'warm' and r.states().get(T17) != 'ready')
+    finally:
+        r.close()
+    b = Router('unified', models=(T17,), host='voice-peer')
+    try:
+        b.admin(f'/admin/models/{T17}/load')
+        deadline = time.time() + 180
+        while b.states().get(T17) != 'ready' and time.time() < deadline:
+            time.sleep(0.2)
+        a = Router('unified', hold=True, models=(B3, T17, T06), auto=voice,
+                   peers=[dict(id='voice-peer', url=f'http://127.0.0.1:{b.port}', token_env='PEER_TOKEN', models=[T17])])
+        try:
+            status, head, body, route = speak(a)
+            check('auto speech never sends voice references to a peer, even a warm one, when local tiers are held',
+                  status == 503 and body['error'].get('reason') == 'held' and b.states().get(T17) == 'ready'
+                  and head.get('x-granite-host') != 'voice-peer')
+        finally:
+            a.close()
+    finally:
+        b.close()
+    r = Router('unified', models=(B3, T17, T06), auto=dict(enabled=True, prefer=dict(chat=[B3], speech_synthesis=[T17, T06])))
+    try:
+        status, head, body, route = speak(r)
+        check('auto speech stays off unless the profile sets auto.speech', status == 400 and head.get('x-granite-error-code') == 'unsupported_auto')
     finally:
         r.close()
 

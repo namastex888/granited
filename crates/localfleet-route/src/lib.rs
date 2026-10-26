@@ -29,6 +29,8 @@ pub enum Modality {
     Vision,
     /// Speech to text, as a stage before chat.
     Transcription,
+    /// Text to speech on `/v1/audio/speech`.
+    SpeechSynthesis,
 }
 
 /// A model that ran before the reply, such as speech to text for an `input_audio` part.

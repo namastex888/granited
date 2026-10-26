@@ -543,6 +543,7 @@ async fn auto_route(
     let (key, noun) = match modality {
         Modality::Vision => ("vision", "vision"),
         Modality::Transcription => ("transcription", "speech"),
+        Modality::SpeechSynthesis => ("speech_synthesis", "voice"),
         _ => ("chat", "chat"),
     };
     let thread = match thread_of(headers) {
@@ -569,8 +570,11 @@ async fn auto_route(
     let mut classes = Vec::new();
     for id in prefer {
         let mut hosts = s.auto_hosts(id, capability, background).await;
-        if modality == Modality::Transcription {
-            // User audio is transcribed on this node only; it never leaves for a peer.
+        if matches!(
+            modality,
+            Modality::Transcription | Modality::SpeechSynthesis
+        ) {
+            // User audio, and voice references, stay on this node; they never leave for a peer.
             hosts.retain(|(peer, _)| peer.is_none());
         }
         classes.push((id.as_str(), hosts));
@@ -729,11 +733,7 @@ async fn auto_route(
 
 /// `auto` resolves once, on the node that first receives the request; peers only ever see a
 /// concrete id. Embeddings and forecast are pinned to their first preference.
-fn resolve_auto(
-    s: &Service,
-    path: &str,
-    headers: &axum::http::HeaderMap,
-) -> Result<String, Failure> {
+fn no_hop(headers: &axum::http::HeaderMap) -> Result<(), Failure> {
     if headers
         .get("x-granite-hop")
         .and_then(|v| v.to_str().ok())
@@ -746,6 +746,15 @@ fn resolve_auto(
             "auto is resolved by the first node; peers receive a model id",
         ));
     }
+    Ok(())
+}
+
+fn resolve_auto(
+    s: &Service,
+    path: &str,
+    headers: &axum::http::HeaderMap,
+) -> Result<String, Failure> {
+    no_hop(headers)?;
     let capability = contracts::capability(path).unwrap_or("");
     if !auto_capabilities(s).contains(&capability) {
         return Err(failure(
@@ -986,6 +995,18 @@ async fn dispatch(
     if s.config.auto.enabled && value["model"] == "auto" {
         if path == "/v1/chat/completions" && auto_capabilities(&s).contains(&"chat") {
             return auto_entry(&s, path, value, headers, start).await;
+        }
+        if path == "/v1/audio/speech"
+            && s.config.auto.speech
+            && s.config.auto.prefer.contains_key("speech_synthesis")
+        {
+            if let Err(e) = no_hop(headers) {
+                return e.into_response();
+            }
+            let modality = localfleet_route::Modality::SpeechSynthesis;
+            return auto_route(&s, path, modality, value, headers, start, Vec::new())
+                .await
+                .0;
         }
         match resolve_auto(&s, path, headers) {
             Ok(id) => value["model"] = json!(id),

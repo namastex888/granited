@@ -31,6 +31,8 @@ pub struct Synthesis {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub max_new_tokens: Option<u32>,
+    /// `true`: a WAV header with an unknown length, then 16-bit PCM as it is generated.
+    pub stream: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -274,6 +276,8 @@ mod tests {
         let ok = json!({"model":"tts","input":"Olá.","references":[{"audio_base64":"UklGRg==","text":"oi"}]});
         assert_eq!(capability("/v1/audio/speech"), Some("speech_synthesis"));
         assert!(validate("/v1/audio/speech", &ok).is_ok());
+        let streamed = json!({"model":"tts","input":"x","stream":true});
+        assert!(validate("/v1/audio/speech", &streamed).is_ok());
         for bad in [
             json!({"model":"tts","input":"  "}),
             json!({"model":"tts","input":"x","response_format":"mp3"}),

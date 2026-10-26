@@ -113,12 +113,16 @@ pub struct Auto {
     /// Chat with `input_audio` parts is transcribed by `prefer.transcription` first.
     #[serde(default)]
     pub audio: bool,
+    /// `/v1/audio/speech` with `auto` picks from `prefer.speech_synthesis`, best tier first,
+    /// never evicting, on this node only: voice references are personal audio.
+    #[serde(default)]
+    pub speech: bool,
 }
 
 /// The capabilities `auto` serves; every other endpoint answers `unsupported_auto`.
 pub const AUTO_CAPABILITIES: [&str; 3] = ["chat", "embeddings", "forecast"];
 /// Preference lists that only serve parts of an `auto` chat request, never their own endpoint.
-pub const AUTO_INPUTS: [&str; 2] = ["vision", "transcription"];
+pub const AUTO_INPUTS: [&str; 3] = ["vision", "transcription", "speech_synthesis"];
 const MAX_AUTO_ID: usize = 64;
 
 /// `auto` is reserved, and every preference must name a registered model of the right kind.
@@ -142,7 +146,7 @@ fn validate_auto(config: &Config, registry: &Registry) -> Result<(), String> {
             && !AUTO_INPUTS.contains(&capability.as_str())
         {
             return Err(format!(
-                "auto.prefer.{capability}: auto serves only chat, embeddings, forecast, vision and transcription"
+                "auto.prefer.{capability}: auto serves only chat, embeddings, forecast, vision, transcription and speech_synthesis"
             ));
         }
         if ids.is_empty() {
@@ -179,9 +183,19 @@ fn validate_auto(config: &Config, registry: &Registry) -> Result<(), String> {
             "auto.prefer.transcription: {id} must be deployed on this node, not only on a peer"
         ));
     }
+    if let Some(ids) = config.auto.prefer.get("speech_synthesis")
+        && let Some(id) = ids
+            .iter()
+            .find(|id| !config.deployments.iter().any(|d| &d.model == *id))
+    {
+        return Err(format!(
+            "auto.prefer.speech_synthesis: {id} must be deployed on this node; voice references never leave it"
+        ));
+    }
     for (on, flag, key) in [
         (config.auto.images, "images", "vision"),
         (config.auto.audio, "audio", "transcription"),
+        (config.auto.speech, "speech", "speech_synthesis"),
     ] {
         if on && !config.auto.prefer.contains_key(key) {
             return Err(format!("auto.{flag} needs auto.prefer.{key}"));
