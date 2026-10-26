@@ -21,8 +21,16 @@ pub struct Forecast {
 pub struct Synthesis {
     pub model: String,
     pub input: String,
-    /// Accepted for OpenAI compatibility; voices come from `references`.
+    /// A stored voice id (`/v1/voices`): with no `references`, the gateway sends that voice's clip
+    /// for `mood` inline. A name that is no stored voice is ignored when `references` are present
+    /// (OpenAI compatibility).
     pub voice: Option<String>,
+    /// With a stored `voice`: the mood's clip; then `question` for an input ending in `?` when no
+    /// mood was given, the voice's default mood, `neutral`, then any. Never an error.
+    pub mood: Option<String>,
+    /// Passed to the engine; `auto` by default. Qwen3-TTS has no pt-BR/pt-PT split: with ICL the
+    /// accent follows the reference.
+    pub language: Option<String>,
     /// Only `wav`.
     pub response_format: Option<String>,
     #[serde(default)]

@@ -1,6 +1,7 @@
 use crate::{
     activity, contracts,
     lifecycle::{Failure, HostClass, LoadMode, Service, failure},
+    voices,
 };
 use axum::{
     Json, Router,
@@ -12,7 +13,7 @@ use axum::{
     http::{HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use base64::Engine;
 use futures_util::StreamExt;
@@ -25,7 +26,12 @@ use std::{
 impl IntoResponse for Failure {
     fn into_response(self) -> Response {
         let status = match self.code.as_str() {
-            "unknown_model" | "unknown_operation" | "route_not_found" => StatusCode::NOT_FOUND,
+            "unknown_model" | "unknown_operation" | "route_not_found" | "voice_not_found" => {
+                StatusCode::NOT_FOUND
+            }
+            "voice_exists" => StatusCode::CONFLICT,
+            "voice_has_no_references" => StatusCode::BAD_REQUEST,
+            "voice_store_error" => StatusCode::INTERNAL_SERVER_ERROR,
             "invalid_schema"
             | "invalid_operation"
             | "auto_not_forwardable"
@@ -210,7 +216,10 @@ pub fn router(service: Arc<Service>) -> Router {
         .route("/admin/operations/{id}/cancel",post(cancel)).route("/internal/hardware",get(hardware)).route("/v1/devices",get(devices)).route("/internal/hosts",get(hosts))
         .route("/internal/contracts",get(||async {Json(contracts::schemas())})).route("/internal/metrics",get(metrics))
         .route("/internal/activity",get(activity_report))
-        .route("/v1/audio/transcriptions",post(audio));
+        .route("/v1/audio/transcriptions",post(audio))
+        .route("/v1/voices",get(voices_list).post(voice_create))
+        .route("/v1/voices/{id}",get(voice_get).patch(voice_patch).delete(voice_delete))
+        .route("/v1/voices/{id}/references/{mood}",put(voice_reference));
     for path in [
         "/v1/chat/completions",
         "/v1/systemone",
@@ -232,6 +241,112 @@ pub fn router(service: Arc<Service>) -> Router {
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(service.clone(), guard))
         .with_state(service)
+}
+
+/// Runs a voice-store call off the async workers; the store is small files on local disk.
+async fn voice_call<F>(s: &Service, f: F) -> Response
+where
+    F: FnOnce(voices::Store) -> Result<Value, voices::VoiceError> + Send + 'static,
+{
+    let store = voices::Store::new(&s.config.state_dir);
+    match tokio::task::spawn_blocking(move || f(store)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(e)) => failure(e.code(), e.message()).into_response(),
+        Err(_) => failure("voice_store_error", "voice store call failed").into_response(),
+    }
+}
+
+fn json_body(bytes: &Bytes) -> Result<Value, Failure> {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .filter(Value::is_object)
+        .ok_or_else(|| failure("invalid_schema", "body must be a JSON object"))
+}
+
+async fn voices_list(State(s): State<Arc<Service>>) -> Response {
+    voice_call(&s, |store| store.list()).await
+}
+
+/// `{"voice_id", "name"}`: a new personal voice, with no clips yet.
+async fn voice_create(State(s): State<Arc<Service>>, bytes: Bytes) -> Response {
+    let body = match json_body(&bytes) {
+        Ok(body) => body,
+        Err(e) => return e.into_response(),
+    };
+    let (Some(id), name) = (
+        body["voice_id"].as_str().map(str::to_owned),
+        body["name"].as_str().unwrap_or("").to_owned(),
+    ) else {
+        return failure("invalid_schema", "voice_id is required").into_response();
+    };
+    voice_call(&s, move |store| store.create(&id, &name)).await
+}
+
+async fn voice_get(State(s): State<Arc<Service>>, Path(id): Path<String>) -> Response {
+    voice_call(&s, move |store| store.get(&id)).await
+}
+
+async fn voice_patch(
+    State(s): State<Arc<Service>>,
+    Path(id): Path<String>,
+    bytes: Bytes,
+) -> Response {
+    let body = match json_body(&bytes) {
+        Ok(body) => body,
+        Err(e) => return e.into_response(),
+    };
+    voice_call(&s, move |store| store.patch(&id, &body)).await
+}
+
+async fn voice_delete(State(s): State<Arc<Service>>, Path(id): Path<String>) -> Response {
+    voice_call(&s, move |store| {
+        store
+            .delete(&id)
+            .map(|()| json!({"voice_id": id, "deleted": true}))
+    })
+    .await
+}
+
+/// Multipart `audio` (a WAV, 1 to 30 s) and `text` (its exact transcript): that mood's clip.
+async fn voice_reference(
+    State(s): State<Arc<Service>>,
+    Path((id, mood)): Path<(String, String)>,
+    request: Request,
+) -> Response {
+    let mut multipart = match Multipart::from_request(request, &s).await {
+        Ok(m) => m,
+        Err(e) => return failure("invalid_schema", e.to_string()).into_response(),
+    };
+    let (mut audio, mut text) = (None, None);
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(e) => return failure("invalid_schema", e.to_string()).into_response(),
+        };
+        match field.name().unwrap_or("") {
+            "audio" => audio = field.bytes().await.ok(),
+            "text" => text = field.text().await.ok(),
+            other => {
+                return failure(
+                    "invalid_schema",
+                    format!("unsupported field {other}: send audio and text"),
+                )
+                .into_response();
+            }
+        }
+    }
+    let (Some(audio), Some(text)) = (audio, text) else {
+        return failure(
+            "invalid_schema",
+            "audio (a WAV) and text (its transcript) are required",
+        )
+        .into_response();
+    };
+    voice_call(&s, move |store| {
+        store.put_reference(&id, &mood, &audio, &text)
+    })
+    .await
 }
 
 async fn models(State(s): State<Arc<Service>>) -> Json<Value> {
@@ -1146,6 +1261,111 @@ async fn dispatch(
     if let Err(e) = contracts::validate(path, &value) {
         return failure("invalid_schema", e).into_response();
     }
+    if path != "/v1/audio/speech" {
+        return dispatch_resolved(s, path, value, headers).await;
+    }
+    let voice_headers = match speech_voice(&s, &mut value).await {
+        Ok(found) => found,
+        Err(e) => return e.into_response(),
+    };
+    let mut response = dispatch_resolved(s, path, value, headers).await;
+    for (name, text) in voice_headers {
+        if let Ok(text) = HeaderValue::from_str(&text) {
+            response.headers_mut().insert(name, text);
+        }
+    }
+    response
+}
+
+/// A speech request naming a stored voice and sending no `references` gets that voice's clip for
+/// the mood inline; `mood` is removed, so a worker or a peer sees only inline references. Returns
+/// the headers that say which voice and mood were used.
+async fn speech_voice(
+    s: &Service,
+    value: &mut Value,
+) -> Result<Vec<(&'static str, String)>, Failure> {
+    let mood = value
+        .as_object_mut()
+        .and_then(|o| o.remove("mood"))
+        .and_then(|m| m.as_str().map(str::to_owned));
+    let has_references = value["references"]
+        .as_array()
+        .is_some_and(|r| !r.is_empty());
+    let Some(voice) = value["voice"].as_str().map(str::to_owned) else {
+        return Ok(Vec::new());
+    };
+    if has_references {
+        // Inline references win; a voice name beside them is ignored (OpenAI compatibility).
+        return Ok(Vec::new());
+    }
+    let store = voices::Store::new(&s.config.state_dir);
+    let input = value["input"].as_str().unwrap_or("").to_owned();
+    let (id, wanted) = (voice.clone(), mood.clone());
+    let resolved =
+        tokio::task::spawn_blocking(move || store.resolve(&id, wanted.as_deref(), &input))
+            .await
+            .map_err(|_| failure("voice_store_error", "voice store call failed"))?
+            .map_err(|e| match e {
+                voices::VoiceError::Invalid(_) => failure(
+                    "voice_not_found",
+                    "voice names no stored voice; send references or a stored voice id",
+                ),
+                e => failure(e.code(), e.message()),
+            })?;
+    value["references"] = json!([resolved.reference]);
+    if value["temperature"].is_null()
+        && let Some(t) = resolved.temperature
+    {
+        value["temperature"] = json!(t);
+    }
+    let requested = match mood {
+        Some(m) if voices::valid_name(&m) => m,
+        Some(_) => "invalid".into(),
+        None => "none".into(),
+    };
+    Ok(vec![
+        ("x-granite-voice", voice),
+        ("x-granite-mood-requested", requested),
+        ("x-granite-mood-used", resolved.mood_used),
+        ("x-granite-ref-hash", resolved.ref_hash),
+    ])
+}
+
+/// A model's own speech limits from the registry: `max_input_chars` and `references_required`.
+fn speech_limits(s: &Service, id: &str, value: &Value) -> Result<(), Failure> {
+    let Some(model) = s.models.get(id) else {
+        return Ok(());
+    };
+    if let Some(max) = model
+        .metadata
+        .get("max_input_chars")
+        .and_then(Value::as_u64)
+        && value["input"]
+            .as_str()
+            .is_some_and(|t| t.chars().count() as u64 > max)
+    {
+        return Err(failure(
+            "invalid_schema",
+            format!("{id} takes at most {max} input characters"),
+        ));
+    }
+    if model.metadata.get("references_required") == Some(&Value::Bool(true))
+        && value["references"].as_array().is_none_or(|r| r.is_empty())
+    {
+        return Err(failure(
+            "invalid_schema",
+            format!("{id} has no default voice: send references, or a stored voice id as voice"),
+        ));
+    }
+    Ok(())
+}
+
+async fn dispatch_resolved(
+    s: Arc<Service>,
+    path: &str,
+    mut value: Value,
+    headers: &axum::http::HeaderMap,
+) -> Response {
     let start = Instant::now();
     if s.config.auto.enabled && value["model"] == "auto" {
         if path == "/v1/chat/completions" && auto_capabilities(&s).contains(&"chat") {
@@ -1171,6 +1391,11 @@ async fn dispatch(
     let id = s.resolve_model(value["model"].as_str().unwrap()).to_owned();
     value["model"] = json!(id);
     if let Err(e) = prepare(&s, path, &id, &mut value) {
+        return e.into_response();
+    }
+    if path == "/v1/audio/speech"
+        && let Err(e) = speech_limits(&s, &id, &value)
+    {
         return e.into_response();
     }
     let thread = match thread_of(headers) {
@@ -1606,6 +1831,11 @@ struct Events {
     strip: bool,
     /// Speech in `stream_format: "events"`: the seconds its final `done` event reports.
     audio_seconds: Option<f64>,
+    /// Speech events seen: PCM bytes relayed in `audio` events, and whether `done` has passed, so a
+    /// stream that breaks before its `done` can still end with one.
+    audio_bytes: u64,
+    speech: bool,
+    speech_done: bool,
     /// While an oversized event passes through: its last bytes, to find its end across chunks.
     skipping: Option<Vec<u8>>,
 }
@@ -1723,6 +1953,9 @@ impl Watch {
                 usage: None,
                 strip: strip_usage_chunk,
                 audio_seconds: None,
+                audio_bytes: 0,
+                speech: false,
+                speech_done: false,
                 skipping: None,
             })
         } else {
@@ -1805,6 +2038,21 @@ impl Watch {
 }
 
 impl Events {
+    /// For a speech event stream that broke before its `done`: the `done` event the worker would
+    /// have sent, counting the 16-bit 24 kHz audio relayed. A blank line first ends any event the
+    /// break cut short, so `done` always parses on its own.
+    fn closing_done(&self) -> Option<Bytes> {
+        if !self.speech || self.speech_done {
+            return None;
+        }
+        let samples = self.audio_bytes / 2;
+        let done = json!({"truncated": false, "frames": samples / 1920,
+            "audio_seconds": (samples as f64 / 24.0).round() / 1000.0,
+            "error": {"code": "backend_error", "message": "the backend stream broke before it finished"}});
+        let lead = if self.pending.is_empty() { "" } else { "\n\n" };
+        Some(Bytes::from(format!("{lead}event: done\ndata: {done}\n\n")))
+    }
+
     /// Passes one chunk on. When the usage-only event is dropped, complete events go out as soon
     /// as their blank line arrives and only the incomplete tail waits.
     fn pass(&mut self, chunk: Bytes) -> Bytes {
@@ -1855,6 +2103,12 @@ impl Events {
             {
                 self.audio_seconds = Some(seconds);
             }
+            if let Some(pcm) = data.as_ref().and_then(|d| d["pcm_base64"].as_str()) {
+                let padding = pcm.bytes().rev().take_while(|b| *b == b'=').count() as u64;
+                self.audio_bytes += (pcm.len() as u64 / 4 * 3).saturating_sub(padding);
+                self.speech = true;
+            }
+            self.speech_done |= done && self.speech;
             let usage_only = !failed
                 && usage.is_some()
                 && data
@@ -1998,15 +2252,18 @@ async fn forward_response(
         )
     });
     let stream = futures_util::stream::unfold(
-        (upstream.bytes_stream().fuse(), lease, meter, watch),
-        |(mut stream, lease, mut meter, mut watch)| async move {
+        (upstream.bytes_stream().fuse(), lease, meter, watch, false),
+        |(mut stream, lease, mut meter, mut watch, ended)| async move {
+            if ended {
+                return None;
+            }
             loop {
                 let next = stream.next().await;
                 match (next, meter.as_mut()) {
                     (Some(Ok(chunk)), Some(_)) => {
                         let chunk = watch.as_mut()?.pass(chunk);
                         if !chunk.is_empty() {
-                            return Some((Ok(chunk), (stream, lease, meter, watch)));
+                            return Some((Ok(chunk), (stream, lease, meter, watch, false)));
                         }
                     }
                     (Some(Err(e)), m) => {
@@ -2014,12 +2271,21 @@ async fn forward_response(
                         if let Some(m) = m {
                             m.settle(activity::Outcome::Failed);
                         }
-                        return Some((Err(e), (stream, lease, None, None)));
+                        // Speech events still end with `done`, carrying the error, then the stream ends.
+                        if let Some(Watch::Events(events)) = &watch
+                            && let Some(done) = events.closing_done()
+                        {
+                            return Some((Ok(done), (stream, lease, None, None, true)));
+                        }
+                        return Some((Err(e), (stream, lease, None, None, false)));
                     }
-                    (Some(chunk), None) => return Some((chunk, (stream, lease, meter, watch))),
+                    (Some(chunk), None) => {
+                        return Some((chunk, (stream, lease, meter, watch, false)));
+                    }
                     (None, Some(m)) => {
                         let rest = m.finish(watch.take()?);
-                        return (!rest.is_empty()).then(|| (Ok(rest), (stream, lease, None, None)));
+                        return (!rest.is_empty())
+                            .then(|| (Ok(rest), (stream, lease, None, None, false)));
                     }
                     (None, None) => return None,
                 }
@@ -2040,6 +2306,7 @@ async fn forward_response(
         "x-granite-reasoning-tokens",
         "x-granite-context-tokens",
         "x-granite-truncated",
+        "x-granite-frame-budget",
         "server-timing",
     ] {
         if let Some(value) = headers.get(name) {

@@ -5,6 +5,7 @@ mod contracts;
 mod hardware;
 mod lifecycle;
 mod process;
+mod voices;
 
 use std::{
     collections::BTreeMap,

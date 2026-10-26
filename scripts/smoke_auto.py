@@ -39,6 +39,8 @@ def wav(seconds=0.5, rate=16000):
 
 WAV_BYTES = wav()
 WAV = base64.b64encode(WAV_BYTES).decode()
+# Qwen3-TTS needs a reference; the stub does not read it.
+REF = dict(audio_base64=WAV, text='a reference')
 
 
 def image(url=PNG):
@@ -427,7 +429,7 @@ def main():
         status, head, body, route = speak(r, {'x-granite-hop': '1'})
         check('auto speech is resolved by the first node only', status == 400 and head.get('x-granite-error-code') == 'auto_not_forwardable')
         def cut(text):
-            data = json.dumps(dict(model=T17, input=text, response_format='wav')).encode()
+            data = json.dumps(dict(model=T17, input=text, response_format='wav', references=[REF])).encode()
             req = urllib.request.Request(f'http://127.0.0.1:{r.port}/v1/audio/speech', data,
                                          {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json'})
             with urllib.request.urlopen(req, timeout=180) as resp:
@@ -443,7 +445,7 @@ def main():
                     round(sum(b['units'].get('audio_seconds', 0) for b in mine), 3))
 
         def evented(text):
-            data = json.dumps(dict(model=T17, input=text, stream=True, stream_format='events')).encode()
+            data = json.dumps(dict(model=T17, input=text, stream=True, stream_format='events', references=[REF])).encode()
             req = urllib.request.Request(f'http://127.0.0.1:{r.port}/v1/audio/speech', data,
                                          {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json'})
             with urllib.request.urlopen(req, timeout=180) as resp:
@@ -640,7 +642,7 @@ def main():
                   'tone': dict(instructions='pick', type='choice', criteria=dict(a='first', b='second')),
                   'risk': dict(instructions='rate', type='score', criteria=['low', 'high'])}))[0],
               r.transcribe(SPEECH)[0],
-              post(r, '/v1/audio/speech', dict(model='qwen3-tts-0.6b-base', input='hello', response_format='wav'))[0],
+              post(r, '/v1/audio/speech', dict(model='qwen3-tts-0.6b-base', input='hello', response_format='wav', references=[REF]))[0],
               post(r, '/v1/embeddings', dict(model=EMBED, input=['a', 'b']))[0],
               post(r, '/v1/retrieval/rank', dict(model=EMBED, query='q', documents=[dict(id=i, text=i) for i in 'xyz']))[0],
               post(r, '/v1/forecast', dict(model=TTM, history=[1.0, 2.0, 3.0, 4.0], horizon=4))[0],
@@ -747,6 +749,100 @@ def main():
         check('both held: 503 auto_unavailable/held with no Retry-After',
               status == 503 and body['error'].get('reason') == 'held' and 'retry-after' not in head
               and 'name a model' not in body['error']['message'])
+    finally:
+        r.close()
+
+    # Stored voices: one clip per mood, sent inline by the gateway; workers never see mood.
+    def call(r, method, path, body=None, key=API, content_type='application/json'):
+        data = body if isinstance(body, bytes) or body is None else json.dumps(body).encode()
+        req = urllib.request.Request(f'http://127.0.0.1:{r.port}{path}', data, {'Authorization': 'Bearer ' + key,
+                                     'Content-Type': content_type}, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                raw, status, head = resp.read(), resp.status, resp.headers
+        except urllib.error.HTTPError as e:
+            raw, status, head = e.read(), e.code, e.headers
+        try:
+            return status, head, json.loads(raw)
+        except ValueError:
+            return status, head, raw
+
+    def clip(r, voice, mood, seconds, text):
+        boundary = 'smokeboundary'
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="text"\r\n\r\n{text}\r\n'
+                f'--{boundary}\r\nContent-Disposition: form-data; name="audio"; filename="ref.wav"\r\n'
+                f'Content-Type: audio/wav\r\n\r\n').encode() + wav(seconds, 24000) + f'\r\n--{boundary}--\r\n'.encode()
+        return call(r, 'PUT', f'/v1/voices/{voice}/references/{mood}', body,
+                    content_type=f'multipart/form-data; boundary={boundary}')
+
+    def holds(f):
+        # A missing feature reads as a failed check, never as a crash that hides the others.
+        try:
+            return f()
+        except Exception:
+            return False
+
+    r = Router('cpu', models=(T06,))
+    try:
+        say = lambda **body: call(r, 'POST', '/v1/audio/speech', dict(model=T06, input=body.pop('input', 'Oi!'), **body))
+        created = call(r, 'POST', '/v1/voices', dict(voice_id='mira', name='Mira'))
+        check('a voice is created once; the voice routes need the API key',
+              holds(lambda: created[0] == 200 and call(r, 'POST', '/v1/voices', dict(voice_id='mira'))[0] == 409
+              and call(r, 'GET', '/v1/voices', key='wrong')[0] == 401 and call(r, 'POST', '/v1/voices', dict(voice_id='Bad Id'))[0] == 400))
+        joy = clip(r, 'mira', 'joy', 2.0, 'joy take')
+        clip(r, 'mira', 'neutral', 2.0, 'neutral take')
+        clip(r, 'mira', 'question', 2.0, 'question take')
+        check('a clip is a WAV of 1 to 30 s with its transcript; the store says its hash and length',
+              holds(lambda: joy[0] == 200 and joy[2]['seconds'] == 2.0 and len(joy[2]['ref_hash']) == 16
+              and clip(r, 'mira', 'calm', 0.5, 'too short')[0] == 400 and clip(r, 'nobody', 'joy', 2.0, 't')[0] == 404))
+        listed = call(r, 'GET', '/v1/voices')[2]
+        check('GET /v1/voices lists each voice with its moods',
+              holds(lambda: sorted(listed['voices'][0]['references']) == ['joy', 'neutral', 'question']))
+        status, head, body = say(voice='mira', mood='joy', language='portuguese')
+        check('a stored voice: the mood\'s clip goes inline, mood never reaches the worker, language does',
+              holds(lambda: status == 200 and body['ref_texts'] == ['joy take'] and body['saw_mood'] is False and body['language'] == 'portuguese'
+              and head.get('x-granite-voice') == 'mira' and head.get('x-granite-mood-requested') == 'joy'
+              and head.get('x-granite-mood-used') == 'joy' and head.get('x-granite-ref-hash') == joy[2]['ref_hash']))
+        sad, question, plain = say(voice='mira', mood='sad'), say(voice='mira', input='Tudo bem?'), say(voice='mira', input='Oi.')
+        check('an unknown mood speaks neutral; a question with no mood speaks question; never an error',
+              holds(lambda: (sad[0], sad[1].get('x-granite-mood-used'), sad[2]['ref_texts']) == (200, 'neutral', ['neutral take'])
+              and question[1].get('x-granite-mood-used') == 'question' and question[1].get('x-granite-mood-requested') == 'none'
+              and plain[1].get('x-granite-mood-used') == 'neutral'))
+        call(r, 'PATCH', '/v1/voices/mira', dict(default_mood='joy', temperature=1.0))
+        patched = say(voice='mira', input='Oi.')
+        check('the voice\'s default mood and temperature apply when the request names none',
+              holds(lambda: patched[1].get('x-granite-mood-used') == 'joy' and patched[2]['temperature'] == 1.0
+              and say(voice='mira', temperature=0.5)[2]['temperature'] == 0.5))
+        inline = say(voice='alloy', references=[REF])
+        check('inline references win; a voice that names no stored voice is ignored beside them, refused without them',
+              holds(lambda: inline[0] == 200 and inline[2]['ref_texts'] == ['a reference'] and 'x-granite-voice' not in inline[1]
+              and say(voice='nobody')[1].get('x-granite-error-code') == 'voice_not_found' and say(voice='nobody')[0] == 404))
+        check('qwen3-tts refuses a request with no reference and an input over 1000 characters, before admission',
+              holds(lambda: say()[0] == 400 and 'no default voice' in say()[2]['error']['message']
+              and say(input='x' * 1001, references=[REF])[0] == 400 and say(input='x' * 1000, references=[REF])[0] == 200))
+        req = urllib.request.Request(f'http://127.0.0.1:{r.port}/v1/audio/speech', json.dumps(dict(
+            model=T06, input='BREAK here', voice='mira', stream=True, stream_format='events')).encode(),
+            {'Authorization': 'Bearer ' + API, 'Content-Type': 'application/json'})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                budget, raw = resp.headers.get('x-granite-frame-budget'), resp.read().decode()
+        except (urllib.error.URLError, http.client.HTTPException) as e:
+            budget, raw = None, f'broken: {type(e).__name__}'
+        kinds = [next(l[6:].strip() for l in e.splitlines() if l.startswith('event:')) for e in raw.split('\n\n') if 'event:' in e]
+        done = json.loads(raw.rsplit('data:', 1)[1]) if kinds and kinds[-1] == 'done' else {}
+        check('a speech stream whose backend breaks before done still ends with a done from the gateway',
+              holds(lambda: kinds == ['audio', 'done'] and done.get('error', {}).get('code') == 'backend_error'
+              and done.get('frames') == 6 and done.get('audio_seconds') == 0.5 and done.get('truncated') is False))
+        wav_reply = call(r, 'POST', '/v1/audio/speech', dict(model=T06, input='hi', voice='mira', response_format='wav'))
+        check('the worker\'s frame budget reaches the client before the body, streamed and buffered',
+              holds(lambda: budget == '1015' and wav_reply[1].get('x-granite-frame-budget') == '1015'))
+        root = Path(r.state.name) / 'voices'
+        modes = holds(lambda: {f.name: oct(f.stat().st_mode & 0o777) for f in (root / 'mira').iterdir()}) or {}
+        check('voices are 0700 directories of 0600 files',
+              holds(lambda: oct(root.stat().st_mode & 0o777) == '0o700' and oct((root / 'mira').stat().st_mode & 0o777) == '0o700'
+              and set(modes.values()) == {'0o600'} and 'joy.wav' in modes))
+        check('a deleted voice is gone',
+              holds(lambda: call(r, 'DELETE', '/v1/voices/mira')[0] == 200 and call(r, 'GET', '/v1/voices/mira')[0] == 404))
     finally:
         r.close()
 

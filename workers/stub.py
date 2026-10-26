@@ -51,6 +51,7 @@ def streaming(handler):
                 self.send_header('Content-Length', str(len(data)))
                 if isinstance(data, Cut):
                     self.send_header('X-Granite-Truncated', 'true')
+                self.send_header('X-Granite-Frame-Budget', '1015')  # what the speech worker sends
                 self.end_headers()
                 self.wfile.write(data)
                 return
@@ -66,6 +67,8 @@ def streaming(handler):
             self.send_response(status)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Content-Length', str(promised))
+            if any(isinstance(e, tuple) for e in data):  # speech events
+                self.send_header('X-Granite-Frame-Budget', '1015')
             self.end_headers()
             for e in data:
                 if e is BREAK:
@@ -190,13 +193,19 @@ class Stub:
                 # The worker's events format: audio events, then done, last, also after a failure.
                 pcm = base64.b64encode(bytes(2 * 12000)).decode()  # 0.5 s of silence at 24 kHz
                 audio = ('audio', dict(pcm_base64=pcm, sample_rate=24000, format='s16le'))
+                if 'BREAK' in data['input']:  # the connection ends after one chunk, with no done
+                    return Events([audio, BREAK])
                 if 'FAULT' in data['input']:
                     return Events([audio, ('done', dict(truncated=False, error=dict(code='inference_failed', message='RuntimeError'),
                                                         frames=6, audio_seconds=0.5))])
                 return Events([audio, audio, ('done', dict(truncated=False, error=None, frames=12, audio_seconds=1.0))])
             if data.get('response_format') == 'wav':
                 return Cut(silence(0.75)) if 'TRUNCATE' in data['input'] else silence(0.75)
-            return dict(model=self.args.model, stub_spoke=len(data['input']), references=len(data.get('references') or []))
+            # Echo what reached the worker, so tests can check what the gateway sent inline.
+            refs = data.get('references') or []
+            return dict(model=self.args.model, stub_spoke=len(data['input']), references=len(refs),
+                        ref_texts=[r.get('text') for r in refs], language=data.get('language'),
+                        temperature=data.get('temperature'), saw_mood='mood' in data)
         raise Unsupported(f'Stub does not implement {path}')
 
 

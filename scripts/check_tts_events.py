@@ -1,25 +1,33 @@
-"""Checks the Qwen3-TTS worker's streamed formats (CUDA host only).
+"""Checks the Qwen3-TTS worker's streamed formats, on CUDA (--runtime faster) or Apple silicon (--runtime mlx).
 
 - The default stream (a WAV header, then raw PCM) stays byte-identical: --baseline FILE records its
   sha256 on the first run (run it against the previous worker) and compares on every later run.
 - stream_format "events": `audio` events, then one `done` event, always last, whose frames and
   audio seconds match the audio sent, and which carries `truncated` and `error`.
-- A reply cut at --max-seq-len reports done.truncated; a failure after the first chunks
-  (--fault-after-chunks, a test-only flag) still ends with done, carrying the error.
+- A reply cut at the engine's length limit (--max-seq-len 256 on CUDA, --max-frames 64 on MLX)
+  reports done.truncated; a failure after the first chunks (--fault-after-chunks, a test-only flag)
+  still ends with done, carrying the error.
 
     python3 scripts/check_tts_events.py --python venv-faster/bin/python --weights qwen3-tts-0.6b-base \\
         --ref ref/en.wav --ref-text ref/en.txt --baseline /tmp/tts-default.sha256
+    python3 scripts/check_tts_events.py --runtime mlx --python .venv-tts-mlx/bin/python --weights DIR ...
+
+--fake runs the mlx runtime's stand-in engine (a tone, no Metal, no weights): it checks the wire format only.
 """
 import argparse
 import base64
 import hashlib
+import io
 import json
+import math
 import os
 import signal
 import socket
 import subprocess
+import struct
 import sys
 import time
+import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,10 +45,16 @@ def free_port():
 
 def start(args, *extra):
     port = free_port()
+    device = 'mps' if args.runtime == 'mlx' else 'cuda'
+    fake = ['--fake-engine'] if args.fake else []
     worker = subprocess.Popen([args.python, '-I', str(ROOT / 'workers/tts_qwen.py'), '--weights', args.weights,
                                '--model', 'qwen3-tts-check', '--revision', 'check', '--port', str(port),
-                               '--device', 'cuda', '--runtime', 'faster', *extra],
+                               '--device', device, '--runtime', args.runtime, *fake, *extra],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    if args.pids:
+        # For an outside watchdog: each worker's PID as it spawns, so it can be stopped by PID alone.
+        with open(args.pids, 'a') as f:
+            f.write(f'{worker.pid}\n')
     for _ in range(600):
         if worker.poll() is not None:
             return worker, None
@@ -100,12 +114,27 @@ def events(body_bytes):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--python', required=True)
-    p.add_argument('--weights', required=True)
-    p.add_argument('--ref', required=True)
-    p.add_argument('--ref-text', required=True)
+    p.add_argument('--runtime', default='faster', choices=['faster', 'mlx'])
+    p.add_argument('--fake', action='store_true', help='mlx only: the stand-in engine, no weights or Metal')
+    p.add_argument('--weights', default='-')
+    p.add_argument('--ref')
+    p.add_argument('--ref-text')
     p.add_argument('--baseline', required=True, help='file holding the default stream sha256')
+    p.add_argument('--pids', help='append each spawned worker PID to this file')
     args = p.parse_args()
-    ref = dict(audio_base64=base64.b64encode(Path(args.ref).read_bytes()).decode(), text=Path(args.ref_text).read_text().strip())
+    if args.fake and args.runtime != 'mlx':
+        p.error('--fake needs --runtime mlx')
+    if not args.fake and not (args.ref and args.ref_text and args.weights != '-'):
+        p.error('--weights, --ref and --ref-text are required unless --fake')
+    if args.fake:
+        tone = io.BytesIO()
+        with wave.open(tone, 'wb') as w:
+            w.setnchannels(1), w.setsampwidth(2), w.setframerate(24000)
+            w.writeframes(b''.join(struct.pack('<h', int(8000 * math.sin(i / 20))) for i in range(48000)))
+        ref = dict(audio_base64=base64.b64encode(tone.getvalue()).decode(), text='a two second tone')
+    else:
+        ref = dict(audio_base64=base64.b64encode(Path(args.ref).read_bytes()).decode(), text=Path(args.ref_text).read_text().strip())
+    limit = ['--max-frames', '64'] if args.runtime == 'mlx' else ['--max-seq-len', '256']
     body = lambda text, **kw: dict(model='qwen3-tts-check', input=text, references=[ref], seed=7, stream=True, **kw)
     checks = []
 
@@ -128,16 +157,34 @@ def main():
         print('   events:', len(audio), 'audio, last', got[-1][0] if got else None, {k: done.get(k) for k in ('frames', 'audio_seconds', 'truncated', 'error')})
         checks.append(('stream_format events: audio events, then one done event, last', status == 200 and audio
                        and [k for k, _ in got].count('done') == 1 and got[-1][0] == 'done'))
+        # Barge-in: the client leaves after the first audio event; the worker must stop and free its slot.
+        data = json.dumps(body(LONG, stream_format='events')).encode()
+        with socket.create_connection(('127.0.0.1', port), timeout=600) as sock:
+            sock.sendall(b'POST /v1/audio/speech HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n'
+                         + f'Content-Length: {len(data)}\r\nConnection: close\r\n\r\n'.encode() + data)
+            seen = b''
+            while b'event: audio' not in seen and (chunk := sock.recv(65536)):
+                seen += chunk
+        left, served = time.perf_counter(), None
+        while time.perf_counter() - left < 30:
+            status = post(port, body(LINE))[0]
+            if status != 429:
+                served = (status, round(time.perf_counter() - left, 2))
+                break
+            time.sleep(0.2)
+        print('   barge-in: next request', served)
+        checks.append(('a client that leaves after the first audio event frees the worker: the next request is served',
+                       b'event: audio' in seen and served is not None and served[0] == 200))
         checks.append(('done carries the frames and seconds sent, not truncated, no error',
                        done.get('frames') == samples // 1920 and abs(done.get('audio_seconds', -1) - samples / 24000) < 0.01
                        and done.get('truncated') is False and done.get('error') is None))
     finally:
         stop(worker)
 
-    worker, port = start(args, '--max-seq-len', '256')
+    worker, port = start(args, *limit)
     try:
         got = events(post(port, body(LONG, stream_format='events'))[2]) if port else []
-        checks.append(('a reply cut at max_seq_len 256 reports done.truncated', got and got[-1][0] == 'done' and got[-1][1].get('truncated') is True))
+        checks.append((f'a reply cut at {" ".join(limit)} reports done.truncated', got and got[-1][0] == 'done' and got[-1][1].get('truncated') is True))
     finally:
         stop(worker)
 

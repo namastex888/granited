@@ -905,7 +905,9 @@
       },
       "incompatibilities": [],
       "quality_benchmarked": false,
-      "note": "Released 2026-01-21 under Apache-2.0. Tier budgets come from measured peaks (TTS runtime proposal)."
+      "note": "Released 2026-01-21 under Apache-2.0. Tier budgets come from measured peaks (TTS runtime proposal).",
+      "max_input_chars": 1000,
+      "references_required": true
     },
     {
       "id": "qwen3-tts-0.6b-base",
@@ -941,7 +943,9 @@
       },
       "incompatibilities": [],
       "quality_benchmarked": false,
-      "note": "Released 2026-01-21 under Apache-2.0. Tier budgets come from measured peaks (TTS runtime proposal)."
+      "note": "Released 2026-01-21 under Apache-2.0. Tier budgets come from measured peaks (TTS runtime proposal).",
+      "max_input_chars": 1000,
+      "references_required": true
     }
   ]
 }
