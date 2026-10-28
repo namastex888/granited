@@ -23,6 +23,8 @@ pub struct OwnedProcess {
     /// killed outright leaves it behind, and the next manager on the same state directory (which
     /// holds that directory's exclusive lock) stops exactly that process group, and nothing else.
     ledger: Option<PathBuf>,
+    /// The deployment's `slot_lock`, held while this process is owned; dropping it releases the lock.
+    slot: Option<std::fs::File>,
 }
 
 /// Stop the workers a previous manager on this state directory left running when it was killed:
@@ -101,6 +103,7 @@ impl OwnedProcess {
             model,
             children: Vec::new(),
             ledger: None,
+            slot: None,
         };
         if let Some(pid) = process.id() {
             process.record(pid, "router")?;
@@ -121,6 +124,10 @@ impl OwnedProcess {
         if let Some(path) = self.ledger.take() {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    pub fn hold_slot(&mut self, slot: std::fs::File) {
+        self.slot = Some(slot);
     }
 
     pub fn id(&self) -> Option<u32> {

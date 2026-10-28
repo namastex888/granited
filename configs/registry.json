@@ -946,6 +946,48 @@
       "note": "Released 2026-01-21 under Apache-2.0. Tier budgets come from measured peaks (TTS runtime proposal).",
       "max_input_chars": 1000,
       "references_required": true
+    },
+    {
+      "id": "embeddinggemma-2",
+      "hf_repo": "google/embeddinggemma-2",
+      "family": "embedding",
+      "capabilities": [
+        "embeddings"
+      ],
+      "hf_revision": "914f7f89142e33e77833254d9c9b90c3cef7303b",
+      "architecture": [
+        "EmbeddingGemma2Model"
+      ],
+      "license": "apache-2.0",
+      "context_limit": 8192,
+      "processor": "EmbeddingGemma2Processor",
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "sentence_transformers",
+        "llama_cpp"
+      ],
+      "validation": {
+        "model_card_checked": true,
+        "backend_smoke_test_passed": true,
+        "benchmarked": false,
+        "card_fetched": true,
+        "performance_smoke_measured": true
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/embeddinggemma-2/914f7f89142e33e77833254d9c9b90c3cef7303b",
+      "parameter_count": 744371512,
+      "aliases": [
+        "google/embeddinggemma-2"
+      ],
+      "quality_benchmarked": false,
+      "requirements": {
+        "input": "text, image (png, jpeg, webp), audio (wav, flac, ogg; mono 16 kHz after resampling) and video (mp4, webm, mov; 1 frame per second), alone or interleaved with <|image|>, <|audio|> and <|video|> placeholders; media as data: URIs only",
+        "dimensions": "768 (default), 512, 256 or 128 (Matryoshka)",
+        "task": "optional prompt name from the card, applied to plain-text items only",
+        "precision": "float32 on CPU, bfloat16 on GPUs; never float16"
+      },
+      "note": "Google DeepMind, released 2026-10-06 under Apache-2.0; use must follow the Gemma Prohibited Use Policy. One 768-d space for text, images, audio and video. Not an auto preference: Granite stays the default embedding model; this one serves by name."
     }
   ]
 }

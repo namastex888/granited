@@ -31,6 +31,28 @@ const PEER_BACKOFF: Duration = Duration::from_secs(15);
 const ADMISSION_FRESH: Duration = Duration::from_secs(1);
 const MAX_MEMORY_STALL_PERCENT: f64 = 5.0;
 
+/// Takes a deployment's `slot_lock` without waiting, as `lockf -t 0` does (`flock`), so the
+/// returned file holds it. Another holder refuses the load as `accelerator_busy`.
+fn take_slot(path: Option<&str>) -> Result<Option<std::fs::File>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .map_err(|e| failure("worker_slot", format!("{path}: {e}")))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Err(failure(
+            "accelerator_busy",
+            format!("{path} is held by another run; retry when it is released"),
+        )),
+        Err(std::fs::TryLockError::Error(e)) => Err(failure("worker_slot", format!("{path}: {e}"))),
+    }
+}
+
 /// A load refused for lack of room says nothing about the model's health, so it must not put the
 /// model in the failure cooldown that `score` and `load_cooldown` read.
 fn is_capacity_refusal(code: &str) -> bool {
@@ -1026,6 +1048,7 @@ impl Service {
                 "Worker port already responds; refusing to adopt an unmanaged process",
             ));
         }
+        let slot = take_slot(worker.spec.slot_lock.as_deref())?;
         worker.runtime.lock().unwrap().state = "loading";
         let start = Instant::now();
         let log = std::fs::OpenOptions::new()
@@ -1056,6 +1079,9 @@ impl Service {
             Some(format!("{}/owned/{}.pid", self.config.state_dir, worker.spec.model).into()),
         )
         .map_err(|e| failure("worker_spawn", e.to_string()))?;
+        if let Some(slot) = slot {
+            child.hold_slot(slot);
+        }
         tracing::info!(
             model = worker.spec.model,
             pid = child.id(),
@@ -1769,8 +1795,23 @@ pub fn new_workers(specs: Vec<Deployment>) -> BTreeMap<String, Arc<Worker>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Clients, client_label, score};
+    use super::{Clients, client_label, score, take_slot};
     use serde_json::json;
+
+    #[test]
+    fn a_held_slot_lock_refuses_the_load_until_it_is_released() {
+        let path = std::env::temp_dir().join(format!("granite-slot-{}.lock", std::process::id()));
+        let path = path.to_str().unwrap();
+        assert!(take_slot(None).unwrap().is_none());
+        let held = take_slot(Some(path))
+            .unwrap()
+            .expect("a free lock is taken");
+        let refused = take_slot(Some(path)).unwrap_err();
+        assert_eq!(refused.code, "accelerator_busy");
+        drop(held);
+        assert!(take_slot(Some(path)).unwrap().is_some());
+        let _ = std::fs::remove_file(path);
+    }
 
     fn host(worker: serde_json::Value, available: u64) -> serde_json::Value {
         json!({"managed_workers":[worker],"admission":{"ram_reserve_bytes":1000,"accelerator_reserve_bytes":0},

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """End-to-end smoke test without models: router + stub worker, auth, routing, provenance, admin isolation and errors."""
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,17 @@ def call(path, body=None, key=API, headers=None):
         return e.code, dict(e.headers), e.read()
 
 
+def free(path):
+    """Whether nobody holds the lock at `path` (it is left unlocked again)."""
+    with open(path, 'w') as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return True
+
+
 def main():
     binary = ROOT / 'target/debug/granited'
     with tempfile.TemporaryDirectory() as state:
@@ -45,6 +57,8 @@ def main():
         deployment['base_url'] = f'http://127.0.0.1:{worker}'
         deployment['command'][deployment['command'].index('--port') + 1] = str(worker)
         config['auto'] = {'enabled': True, 'prefer': {'embeddings': [deployment['model']]}}
+        slot = Path(state) / 'gpu-slot.lock'
+        deployment['slot_lock'] = str(slot)
         path = Path(state) / 'config.json'
         path.write_text(json.dumps(config))
         env = dict(os.environ, GRANITE_API_KEY=API, GRANITE_ADMIN_KEY=ADMIN)
@@ -60,9 +74,16 @@ def main():
             checks = []
             status, _, _ = call('/v1/embeddings', {'model': model, 'input': 'x'}, key='wrong')
             checks.append(('rejects a wrong key', status == 401))
+            # slot_lock: another run holding the lock (as `lockf -k -t 0` does) refuses the load.
+            with open(slot, 'w') as other:
+                fcntl.flock(other, fcntl.LOCK_EX)
+                status, headers, body = call('/v1/embeddings', {'model': model, 'input': 'x'})
+            checks.append(('a held slot lock refuses the load with a retry', status == 503
+                           and b'accelerator_busy' in body and headers.get('retry-after') == '30'))
             status, headers, body = call('/v1/embeddings', {'model': model, 'input': ['a', 'b']})
             data = json.loads(body) if status == 200 else {}
             checks.append(('embeds through the stub', status == 200 and len(data.get('data', [])) == 2))
+            checks.append(('the loaded worker holds the slot lock', not free(slot)))
             checks.append(('reports provenance', headers.get('x-granite-backend') == 'embedding_native'
                            and headers.get('x-granite-model-revision') == config['deployments'][0]['revision']))
             status, headers, body = call('/v1/embeddings', {'model': 'auto', 'input': ['a']})
@@ -103,6 +124,15 @@ def main():
             checks.append(('reports power with a scope, and null with a reason when unreadable', all(
                 {'watts', 'limit_watts', 'scope', 'source', 'reason'} <= set(a['power'])
                 and (a['power']['watts'] is not None or a['power']['reason']) for a in accelerators)))
+            status, _, body = call(f'/admin/models/{model}/unload', {}, key=ADMIN)
+            operation = json.loads(body).get('id') if status in (200, 202) else None
+            for _ in range(80):
+                status, _, body = call(f'/admin/operations/{operation}', key=ADMIN)
+                if status != 200 or json.loads(body)['status'] != 'running':
+                    break
+                time.sleep(0.25)
+            checks.append(('unloading releases the slot lock', status == 200
+                           and json.loads(body)['status'] == 'succeeded' and free(slot)))
             status, _, body = call('/v1/embeddings', {'model': 'granite-nonexistent', 'input': 'x'})
             checks.append(('fails unknown models with a structured error', status == 404 and b'unknown_model' in body))
         finally:

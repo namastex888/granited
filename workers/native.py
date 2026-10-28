@@ -33,7 +33,13 @@ class Native:
         kwargs = dict(revision=args.revision, trust_remote_code=False)
         if args.family == 'embedding':
             from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(args.repo, device=args.device, **kwargs)
+            if args.multimodal:
+                # Pinned weights on disk; float32 on CPU, bfloat16 on GPUs. float16 overflows this family.
+                dtype = torch.float32 if args.device == 'cpu' else torch.bfloat16
+                self.model = SentenceTransformer(args.weights, device=args.device, trust_remote_code=False,
+                                                 local_files_only=True, model_kwargs=dict(dtype=dtype))
+            else:
+                self.model = SentenceTransformer(args.repo, device=args.device, **kwargs)
             self.model.eval()
         elif args.family == 'speech':
             from transformers import AutoModelForCTC, AutoProcessor
@@ -52,7 +58,7 @@ class Native:
             raise Unsupported(f'No validated specialist implementation for {args.family}')
         self.lock = threading.Lock()
         self.load_seconds = time.perf_counter() - self.started
-        packages = ('torch', 'transformers', 'sentence-transformers', 'granite-tsfm', 'huggingface-hub', 'numpy')
+        packages = ('torch', 'transformers', 'sentence-transformers', 'granite-tsfm', 'huggingface-hub', 'numpy', 'av', 'soxr', 'pillow')
         self.versions = {}
         for name in packages:
             try:
@@ -66,6 +72,10 @@ class Native:
         if self.args.family == 'embedding':
             capabilities = dict(dimensions=self.model.get_sentence_embedding_dimension(), model_max_tokens=self.model.max_seq_length,
                                 deployment_max_tokens=self.args.max_input_tokens, batch_size=self.args.batch_size, normalization='l2')
+            if self.args.multimodal:
+                capabilities.update(modalities=['text', 'image', 'audio', 'video'], output_dimensions=self.args.dimensions,
+                                    tasks=sorted(self.model.prompts), media_token_cost=MEDIA_COST,
+                                    media=dict(image=sorted(MEDIA['image']), audio=sorted(MEDIA['audio']), video=sorted(MEDIA['video'])))
         elif self.args.family == 'timeseries':
             capabilities = dict(context_length=self.config.context_length, max_horizon=self.config.prediction_length,
                                 quantiles=list(self.config.quantile_levels), channels=self.config.num_input_channels)
@@ -77,6 +87,64 @@ class Native:
                     peak_rss_bytes=rss if platform.system() == 'Darwin' else rss * 1024,
                     python=platform.python_version(), remote_code=False, capabilities=capabilities,
                     processor_revision=self.args.revision)
+
+    def encode_multimodal(self, data):
+        """Text, image, audio and video items, alone or interleaved, into one vector space. Media are data: URIs,
+        decoded here; nothing is fetched or read from disk. A task applies its prompt to plain-text items only."""
+        items = data.get('input')
+        items = [items] if isinstance(items, (str, dict)) else items
+        if not isinstance(items, list) or not 0 < len(items) <= 64:
+            raise ValueError('input requires 1..64 items: text, or objects with text, image, audio and video')
+        task = data.get('task')
+        if task is not None and task not in self.model.prompts:
+            raise ValueError(f'task must be one of {sorted(self.model.prompts)}')
+        dims = data.get('dimensions')
+        if dims is not None and dims not in self.args.dimensions:
+            raise ValueError(f'dimensions must be one of {self.args.dimensions}')
+        cap = min(self.model.max_seq_length, self.args.max_input_tokens)
+        prepared, total = [], 0
+        for i, item in enumerate(items):
+            value, cost = self.media_item(item, task)
+            if cost > cap:
+                raise ValueError(f'input[{i}] needs {cost} tokens; this deployment takes {cap} and never truncates')
+            prepared.append(value)
+            total += cost
+        vectors = [self.model.encode([v], normalize_embeddings=True, convert_to_numpy=True, truncate_dim=dims)[0] for v in prepared]
+        return vectors, total
+
+    def media_item(self, item, task):
+        """One input item as sentence-transformers takes it, and the tokens it costs in the shared context."""
+        if isinstance(item, str):
+            text = self.model.prompts[task] + item if task else item
+            return text, len(self.model.tokenizer(text)['input_ids'])
+        if not isinstance(item, dict) or not item or set(item) - {'text', 'image', 'audio', 'video'}:
+            raise ValueError('an input object takes text, image, audio and video')
+        value, cost = {}, 0
+        for kind in ('image', 'audio', 'video'):
+            uris = item.get(kind, [])
+            uris = [uris] if isinstance(uris, str) else uris
+            if not isinstance(uris, list):
+                raise ValueError(f'{kind} must be a data: URI or a list of them')
+            decoded = [decode_media(kind, uri) for uri in uris]
+            for media, units in decoded:
+                cost += MEDIA_COST[kind] * units
+            if decoded:
+                value[kind] = [media for media, _ in decoded]
+        text = item.get('text')
+        if text is None:
+            if sum(len(v) for v in value.values()) != 1:
+                raise ValueError('an object without text holds exactly one image, audio or video')
+            kind, media = next((k, v[0]) for k, v in value.items())
+            # A bare frame list would read as a batch of images; a video goes in its own key.
+            return ({'video': media} if kind == 'video' else media), cost
+        if not isinstance(text, str):
+            raise ValueError('text must be a string')
+        for kind in ('image', 'audio', 'video'):
+            if text.count(f'<|{kind}|>') != len(value.get(kind, [])):
+                raise ValueError(f'text needs one <|{kind}|> per {kind}, in order')
+        value = {k: v if len(v) > 1 else v[0] for k, v in value.items()}
+        value['text'] = text
+        return value, cost + len(self.model.tokenizer(text)['input_ids'])
 
     def encode(self, texts):
         if isinstance(texts, str):
@@ -98,9 +166,12 @@ class Native:
             if self.args.family == 'embedding' and path == '/v1/embeddings':
                 if data.get('encoding_format', 'float') != 'float':
                     raise Unsupported('Only float embeddings are supported')
-                if data.get('dimensions') is not None:
+                if self.args.multimodal:
+                    vectors, tokens = self.encode_multimodal(data)
+                elif data.get('dimensions') is not None:
                     raise Unsupported('Dimension reduction has not been validated for this worker')
-                vectors, tokens = self.encode(data.get('input'))
+                else:
+                    vectors, tokens = self.encode(data.get('input'))
                 result = dict(object='list', model=self.args.model,
                               data=[dict(object='embedding', index=i, embedding=v.tolist()) for i, v in enumerate(vectors)],
                               usage=dict(prompt_tokens=tokens, total_tokens=tokens))
@@ -174,6 +245,75 @@ class Native:
             return result
 
 
+# What EmbeddingGemma 2 charges each media unit in its shared context: an image, a video frame (sampled at
+# 1 fps), a second of audio (mono, 16 kHz).
+MEDIA_COST = dict(image=280, video=140, audio=25)
+MEDIA = dict(image={'image/png': 8, 'image/jpeg': 8, 'image/webp': 8},
+             audio={'audio/wav': 25, 'audio/x-wav': 25, 'audio/flac': 25, 'audio/ogg': 25},
+             video={'video/mp4': 24, 'video/webm': 24, 'video/quicktime': 24})  # MiB decoded, at most
+
+
+def decode_media(kind, uri):
+    """A data: URI into what the model takes, and its units: (PIL image, 1), (audio dict, seconds) or
+    (frames at 1 fps, frame count). Audio is downmixed to mono and resampled to 16 kHz."""
+    if not isinstance(uri, str) or not uri.startswith('data:') or ';base64,' not in uri:
+        raise ValueError(f'{kind} must be a data: URI ({kind}/...;base64,...); nothing is fetched')
+    mime, payload = uri[5:].split(';base64,', 1)
+    if mime == 'image/jpg':
+        mime = 'image/jpeg'
+    if mime not in MEDIA[kind]:
+        raise ValueError(f'{kind} must be one of {sorted(MEDIA[kind])}')
+    try:
+        raw = base64.b64decode(payload, validate=True)
+    except ValueError:
+        raise ValueError(f'{kind} is not valid base64') from None
+    if not raw or len(raw) > MEDIA[kind][mime] * 1024 * 1024:
+        raise ValueError(f'{kind} must be 1 byte to {MEDIA[kind][mime]} MiB decoded')
+    if kind == 'image':
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = 40_000_000
+        try:
+            image = Image.open(io.BytesIO(raw))
+            image.load()
+        except Exception:
+            raise ValueError('image is not a readable png, jpeg or webp') from None
+        return image.convert('RGB'), 1
+    if kind == 'audio':
+        import numpy as np
+        import soundfile as sf
+        import soxr
+        try:
+            samples, rate = sf.read(io.BytesIO(raw), dtype='float32', always_2d=True)
+        except sf.LibsndfileError:
+            raise ValueError('audio is not a readable wav, flac or ogg file') from None
+        mono = samples.mean(axis=1)
+        if rate != 16000:
+            mono = soxr.resample(mono, rate, 16000)
+        if not mono.size or not np.isfinite(mono).all():
+            raise ValueError('audio is empty or not finite')
+        return dict(array=np.ascontiguousarray(mono, dtype=np.float32), sampling_rate=16000), math.ceil(mono.size / 16000)
+    import av
+    frames = []
+    try:
+        with av.open(io.BytesIO(raw)) as container:
+            stream = container.streams.video[0]
+            next_at = 0.0
+            for frame in container.decode(stream):
+                at = float(frame.pts * stream.time_base) if frame.pts is not None else next_at
+                if at + 1e-6 >= next_at:
+                    frames.append(frame.to_image())
+                    next_at += 1.0
+                    if len(frames) > 120:
+                        raise ValueError('video is longer than 120 s at 1 frame per second')
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError('video is not a readable mp4, webm or mov file') from None
+    if not frames:
+        raise ValueError('video has no frames')
+    return frames, len(frames)
+
+
 def serve(native, args):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
@@ -230,7 +370,13 @@ def main():
     parser.add_argument('--max-input-tokens', type=int, default=512)
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--max-audio-seconds', type=int, default=30)
+    parser.add_argument('--multimodal', action='store_true', help='embedding: text, image, audio and video items from --weights')
+    parser.add_argument('--weights', help='local directory of the pinned --revision; required with --multimodal')
+    parser.add_argument('--dimensions', type=lambda v: [int(x) for x in v.split(',')], default=[],
+                        help='output dimensions a request may ask for (Matryoshka), e.g. 768,512,256,128')
     args = parser.parse_args()
+    if args.multimodal and (args.family != 'embedding' or not args.weights):
+        parser.error('--multimodal is an embedding option and needs --weights')
     serve(Native(args), args)
 
 

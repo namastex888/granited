@@ -173,7 +173,7 @@ def reference(clip):
     try:
         audio, rate = sf.read(io.BytesIO(base64.b64decode(clip['audio_base64'], validate=True)), dtype='float32')
     except (ValueError, sf.LibsndfileError):
-        raise ValueError('reference audio is not a readable wav, flac or ogg file') from None
+        raise ValueError('reference audio is not a readable wav, flac, mp3 or ogg file') from None
     if audio.ndim == 2:
         audio = audio.mean(axis=1)
     if not 1.0 <= len(audio) / rate <= 30.0:

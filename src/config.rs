@@ -39,6 +39,10 @@ pub struct Deployment {
     pub backend_build: String,
     #[serde(default)]
     pub hold_reason: Option<String>,
+    /// A lock file shared with runs outside granited (`lockf -k -t 0 FILE`). The worker starts only
+    /// when the lock is free and holds it until it stops; a held lock refuses the load.
+    #[serde(default)]
+    pub slot_lock: Option<String>,
     #[serde(default)]
     pub context_tokens: Option<u64>,
     #[serde(default)]

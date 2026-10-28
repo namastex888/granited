@@ -50,7 +50,7 @@ pub struct Synthesis {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Reference {
-    /// A WAV, FLAC or MP3 clip, base64 encoded.
+    /// A WAV, FLAC, MP3 or OGG clip, base64 encoded (read with libsndfile 1.2.2; WAV is safest).
     pub audio_base64: String,
     /// What the clip says.
     pub text: String,
