@@ -430,81 +430,279 @@ fn auto_refusal(response: &Response) -> Option<String> {
 
 /// Largest decoded image part a chat request may carry.
 const MAX_IMAGE_BYTES: usize = 8 << 20;
-/// Largest decoded `input_audio` part `auto` transcribes.
+/// Largest decoded audio clip a request may carry (`input_audio` or a System One file).
 const MAX_AUDIO_BYTES: usize = 16 << 20;
-/// Each `input_audio` part is its own speech-to-text call, so a request carries at most this many.
+/// Each `input_audio` part is its own speech-to-text call under `auto`, so a request carries at
+/// most this many.
 const MAX_AUDIO_PARTS: usize = 4;
+/// Largest decoded `input_video` part. A 2-minute 720p AV1 lecture clip with its Opus soundtrack
+/// is about 5.5 MB, so this leaves room for an H.264 transcode inside the 32 MiB body limit.
+const MAX_VIDEO_BYTES: usize = 16 << 20;
+const MAX_VIDEO_PARTS: usize = 2;
 const TRANSCRIBE: &str = "/v1/audio/transcriptions";
 
-fn content_parts(value: &Value) -> impl Iterator<Item = &Value> {
-    value["messages"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|m| m["content"].as_array())
-        .flatten()
+/// How many images, audio clips and videos a request carries, each one checked.
+#[derive(Clone, Copy, Debug, Default)]
+struct Media {
+    images: usize,
+    audio: usize,
+    video: usize,
 }
 
-/// The content part types a chat request may carry. A part of any other type, or with no type,
-/// is refused: `video_url`, `audio_url`, `input_image`, `file` and the like can name a URL an
-/// engine would fetch from inside the fleet.
-const CHAT_PARTS: [&str; 4] = ["text", "image_url", "input_audio", "refusal"];
-
-/// Content parts are allowlisted by type, and image parts must be inline `data:` URIs of png,
-/// jpeg (or jpg) or webp in standard base64, at most 8 MiB decoded. Returns whether the request
-/// carries an image.
-fn check_images(value: &Value) -> Result<bool, String> {
-    let mut any = false;
-    for message in value["messages"].as_array().into_iter().flatten() {
-        if !matches!(
-            message.get("content"),
-            None | Some(Value::Null | Value::String(_) | Value::Array(_))
-        ) {
-            return Err("message content must be a string or an array of parts".into());
+impl Media {
+    fn limits(self) -> Result<Self, String> {
+        if self.audio > MAX_AUDIO_PARTS {
+            return Err(format!("at most {MAX_AUDIO_PARTS} audio clips per request"));
         }
-    }
-    for part in content_parts(value) {
-        let kind = part["type"].as_str().unwrap_or("");
-        if !CHAT_PARTS.contains(&kind) {
+        if self.video > MAX_VIDEO_PARTS {
             return Err(format!(
-                "content part type {:?} is not accepted; use text, image_url (data: URI) or input_audio",
-                part["type"]
+                "at most {MAX_VIDEO_PARTS} input_video parts per request"
             ));
         }
-        if kind != "image_url" {
-            continue;
-        }
-        any = true;
-        let url = part["image_url"]["url"].as_str().unwrap_or("");
-        let Some((mime, data)) = url
-            .strip_prefix("data:")
-            .and_then(|rest| rest.split_once(";base64,"))
-        else {
-            return Err(
-                "image_url must be a data: URI (data:image/png;base64,...); remote URLs are not fetched"
-                    .into(),
-            );
+        Ok(self)
+    }
+
+    /// The first medium the model does not declare: images need `vision`, audio `audio`, video
+    /// `video`. A model never receives a medium it cannot read, so there is no silent fallback.
+    fn missing(self, model: &crate::config::Model) -> Option<&'static str> {
+        [
+            (self.images, "vision"),
+            (self.audio, "audio"),
+            (self.video, "video"),
+        ]
+        .into_iter()
+        .find(|&(n, cap)| n > 0 && !model.capabilities.iter().any(|c| c == cap))
+        .map(|(_, cap)| cap)
+    }
+}
+
+/// One clip type: its part type, the `format` names and `data:` MIME types it accepts, its size
+/// cap, and the file signature a decoded clip must start with.
+struct Clip {
+    kind: &'static str,
+    formats: &'static [&'static str],
+    mimes: &'static [&'static str],
+    max_bytes: usize,
+    sniff: fn(&[u8]) -> bool,
+}
+
+fn is_audio(b: &[u8]) -> bool {
+    (b.len() > 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WAVE")
+        || b.starts_with(b"fLaC")
+        || b.starts_with(b"ID3")
+        || (b.len() > 1 && b[0] == 0xFF && b[1] & 0xE0 == 0xE0)
+}
+
+fn is_video(b: &[u8]) -> bool {
+    (b.len() > 8 && &b[4..8] == b"ftyp") || b.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])
+}
+
+const AUDIO: Clip = Clip {
+    kind: "input_audio",
+    formats: &["wav", "mp3", "flac"],
+    mimes: &[
+        "audio/wav",
+        "audio/x-wav",
+        "audio/wave",
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/flac",
+        "audio/x-flac",
+    ],
+    max_bytes: MAX_AUDIO_BYTES,
+    sniff: is_audio,
+};
+
+const VIDEO: Clip = Clip {
+    kind: "input_video",
+    formats: &["mp4", "webm"],
+    mimes: &["video/mp4", "video/webm"],
+    max_bytes: MAX_VIDEO_BYTES,
+    sniff: is_video,
+};
+
+impl Clip {
+    /// Checks one inline clip, a bare base64 or a `data:` URI, and returns its bare base64.
+    /// llama-server reads a `data` field as a remote URL, a local path or base64, so the clip must
+    /// decode to a file of an allowed type: a URL or a path never reaches the engine.
+    fn check<'a>(&self, payload: &'a str, format: Option<&Value>) -> Result<&'a str, String> {
+        let kind = self.kind;
+        let data = match payload.strip_prefix("data:") {
+            Some(rest) => {
+                let Some((mime, data)) = rest.split_once(";base64,") else {
+                    return Err(format!(
+                        "{kind} data: URI must be base64 (data:<type>;base64,...)"
+                    ));
+                };
+                if !self.mimes.contains(&mime.split(';').next().unwrap_or("")) {
+                    return Err(format!(
+                        "{kind} type must be one of {}",
+                        self.mimes.join(", ")
+                    ));
+                }
+                data
+            }
+            None => payload,
         };
-        let mime = mime.split(';').next().unwrap_or("");
-        if !matches!(
-            mime,
-            "image/png" | "image/jpeg" | "image/jpg" | "image/webp"
-        ) {
-            return Err("image_url must be image/png, image/jpeg or image/webp".into());
+        if format.is_some_and(|f| !f.as_str().is_some_and(|f| self.formats.contains(&f))) {
+            return Err(format!(
+                "{kind} format must be one of {}",
+                self.formats.join(", ")
+            ));
         }
-        let too_big = format!("an image exceeds {} MiB", MAX_IMAGE_BYTES >> 20);
-        if data.len() / 4 * 3 > MAX_IMAGE_BYTES + 3 {
+        let too_big = format!("{kind} exceeds {} MiB", self.max_bytes >> 20);
+        if data.len() / 4 * 3 > self.max_bytes + 3 {
             return Err(too_big);
         }
         match base64::engine::general_purpose::STANDARD.decode(data) {
-            Ok(bytes) if bytes.len() <= MAX_IMAGE_BYTES => {}
-            Ok(_) => return Err(too_big),
-            Err(_) => {
-                return Err("image_url data is not valid standard base64 (no line breaks)".into());
+            Ok(bytes) if bytes.len() > self.max_bytes => Err(too_big),
+            Ok(bytes) if (self.sniff)(&bytes) => Ok(data),
+            Ok(_) => {
+                let (last, rest) = self.formats.split_last().unwrap_or((&"", &[]));
+                Err(format!(
+                    "{kind} data is not a {} or {last} file",
+                    rest.join(", ")
+                ))
+            }
+            Err(_) => Err(format!(
+                "{kind} data is not valid standard base64 (no line breaks)"
+            )),
+        }
+    }
+}
+
+/// An image must be an inline `data:` URI of png, jpeg (or jpg) or webp in standard base64, at
+/// most 8 MiB decoded.
+fn check_image_url(url: &str) -> Result<(), String> {
+    let Some((mime, data)) = url
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(";base64,"))
+    else {
+        return Err(
+            "image_url must be a data: URI (data:image/png;base64,...); remote URLs are not fetched"
+                .into(),
+        );
+    };
+    let mime = mime.split(';').next().unwrap_or("");
+    if !matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/jpg" | "image/webp"
+    ) {
+        return Err("image_url must be image/png, image/jpeg or image/webp".into());
+    }
+    let too_big = format!("an image exceeds {} MiB", MAX_IMAGE_BYTES >> 20);
+    if data.len() / 4 * 3 > MAX_IMAGE_BYTES + 3 {
+        return Err(too_big);
+    }
+    match base64::engine::general_purpose::STANDARD.decode(data) {
+        Ok(bytes) if bytes.len() <= MAX_IMAGE_BYTES => Ok(()),
+        Ok(_) => Err(too_big),
+        Err(_) => Err("image_url data is not valid standard base64 (no line breaks)".into()),
+    }
+}
+
+/// Content parts are allowlisted by type and each medium is checked. `input_audio` and
+/// `input_video` carry their clip in `data` only, never `url`; a `data:` URI there is rewritten
+/// to the bare base64 llama-server expects.
+fn check_media(messages: &mut Value) -> Result<Media, String> {
+    let mut media = Media::default();
+    for message in messages.as_array_mut().into_iter().flatten() {
+        let parts = match message.get_mut("content") {
+            None | Some(Value::Null | Value::String(_)) => continue,
+            Some(Value::Array(parts)) => parts,
+            Some(_) => return Err("message content must be a string or an array of parts".into()),
+        };
+        for part in parts {
+            // Part types are allowlisted. Any other type, or none, is refused: `video_url`,
+            // `audio_url`, `input_image`, `file` and the like can name a URL an engine would
+            // fetch from inside the fleet.
+            let clip = match part["type"].as_str().unwrap_or("") {
+                "text" | "refusal" => continue,
+                "image_url" => {
+                    media.images += 1;
+                    check_image_url(part["image_url"]["url"].as_str().unwrap_or(""))?;
+                    continue;
+                }
+                "input_audio" => {
+                    media.audio += 1;
+                    &AUDIO
+                }
+                "input_video" => {
+                    media.video += 1;
+                    &VIDEO
+                }
+                _ => {
+                    return Err(format!(
+                        "content part type {:?} is not accepted; use text, image_url (data: URI), input_audio or input_video",
+                        part["type"]
+                    ));
+                }
+            };
+            let body = &mut part[clip.kind];
+            if body.get("url").is_some() {
+                return Err(format!(
+                    "{0}.url is not accepted; send the clip inline as {0}.data",
+                    clip.kind
+                ));
+            }
+            let data = clip
+                .check(body["data"].as_str().unwrap_or(""), body.get("format"))?
+                .to_owned();
+            body["data"] = Value::String(data);
+        }
+    }
+    media.limits()
+}
+
+/// A chat request's media; a body with no `messages` is left as it is.
+fn check_chat_media(value: &mut Value) -> Result<Media, String> {
+    value
+        .get_mut("messages")
+        .map_or(Ok(Media::default()), check_media)
+}
+
+/// A System One request's media: `files` and its alias `images` hold `data:` URIs of images or
+/// audio clips, and a `state` made of chat messages (an array, or an object with `messages`)
+/// follows the chat part rules.
+fn check_systemone_media(value: &mut Value) -> Result<Media, String> {
+    let mut media = Media::default();
+    for key in ["files", "images"] {
+        let Some(files) = value.get(key) else {
+            continue;
+        };
+        let Some(files) = files.as_array() else {
+            return Err(format!("{key} must be an array of data: URIs"));
+        };
+        for file in files {
+            let url = file.as_str().unwrap_or("");
+            if url.starts_with("data:audio/") {
+                media.audio += 1;
+                AUDIO.check(url, None)?;
+            } else {
+                media.images += 1;
+                check_image_url(url)?;
             }
         }
     }
-    Ok(any)
+    let messages = match value.get_mut("state") {
+        Some(state @ Value::Array(_)) => Some(state),
+        Some(Value::Object(state)) => state.get_mut("messages"),
+        _ => None,
+    };
+    let state = messages.map_or(Ok(Media::default()), check_media)?;
+    let media = Media {
+        images: media.images + state.images,
+        audio: media.audio + state.audio,
+        video: media.video + state.video,
+    };
+    // llama-server's decision models read images or one audio clip, never both in one prompt.
+    if media.audio > 1 || (media.audio > 0 && media.images > 0) {
+        return Err(
+            "System One takes images or one audio clip per request, not both; send two requests"
+                .into(),
+        );
+    }
+    media.limits()
 }
 
 /// A vision model does not think: effort fields are dropped, and the route header carries none.
@@ -538,11 +736,18 @@ async fn auto_entry(
     if let Err(e) = resolve_auto(s, path, headers) {
         return e.into_response();
     }
-    let images = match check_images(&value) {
-        Ok(images) => images,
+    let media = match check_chat_media(&mut value) {
+        Ok(media) => media,
         Err(e) => return failure("invalid_schema", e).into_response(),
     };
-    let audio = content_parts(&value).any(|p| p["type"] == "input_audio");
+    if media.video > 0 {
+        return failure(
+            "unsupported_auto",
+            "Video input has no auto route; name a model that declares video",
+        )
+        .into_response();
+    }
+    let (images, audio) = (media.images > 0, media.audio > 0);
     for (present, on, what, flag) in [
         (images, s.config.auto.images, "Image", "images"),
         (audio, s.config.auto.audio, "Audio", "audio"),
@@ -576,14 +781,8 @@ async fn auto_entry(
             }
         }
     }
-    if positions.len() > MAX_AUDIO_PARTS {
-        return failure(
-            "invalid_schema",
-            format!("at most {MAX_AUDIO_PARTS} input_audio parts per request"),
-        )
-        .into_response();
-    }
     for (m, p) in positions {
+        // check_media accepted the clip's size, base64 and type; speech to text reads wav only.
         let part = &value["messages"][m]["content"][p];
         if part["input_audio"]["format"] != "wav" {
             return failure("invalid_schema", "input_audio format must be wav").into_response();
@@ -592,25 +791,11 @@ async fn auto_entry(
             .as_str()
             .unwrap_or("")
             .to_owned();
-        match base64::engine::general_purpose::STANDARD.decode(&data) {
-            Ok(bytes)
-                if bytes.len() <= 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" =>
-            {
-                return failure("invalid_schema", "input_audio data is not a wav file")
-                    .into_response();
-            }
-            Ok(bytes) if bytes.len() <= MAX_AUDIO_BYTES => {}
-            Ok(_) => {
-                return failure(
-                    "invalid_schema",
-                    format!("input_audio exceeds {} MiB", MAX_AUDIO_BYTES >> 20),
-                )
-                .into_response();
-            }
-            Err(_) => {
-                return failure("invalid_schema", "input_audio data is not valid base64")
-                    .into_response();
-            }
+        let wav = base64::engine::general_purpose::STANDARD
+            .decode(&data)
+            .is_ok_and(|b| b.len() > 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WAVE");
+        if !wav {
+            return failure("invalid_schema", "input_audio data is not a wav file").into_response();
         }
         // User audio only ever reaches speech to text, never a voice-reference slot.
         let body = json!({"model":s.config.auto.prefer["transcription"][0],"audio_base64":data});
@@ -1448,10 +1633,20 @@ fn prepare(s: &Service, path: &str, id: &str, value: &mut Value) -> Result<(), F
             "Switch requires explicit chat_template_kwargs.adapter_name",
         ));
     }
-    if path == "/v1/chat/completions"
-        && let Err(e) = check_images(value)
-    {
-        return Err(failure("invalid_schema", e));
+    let media = match path {
+        "/v1/chat/completions" => check_chat_media(value),
+        "/v1/systemone" => check_systemone_media(value),
+        _ => Ok(Media::default()),
+    }
+    .map_err(|e| failure("invalid_schema", e))?;
+    if let Some(cap) = media.missing(model) {
+        return Err(failure(
+            "invalid_schema",
+            format!(
+                "{} does not declare {cap}, so it takes no such input",
+                model.id
+            ),
+        ));
     }
     if path == "/v1/chat/completions"
         && model.family == "language"
@@ -1780,6 +1975,20 @@ fn model_headers(mut response: Response, revision: &str, backend: &str) -> Respo
     response
 }
 /// A peer's 429 is always admission (the request never ran); a 503 only when it says so.
+/// The body a backend's error reply reaches the client as. A worker's own refusal (`granite_error`)
+/// and a peer gateway's envelope (`granite_backend_error`) pass as they are, so a forwarded error is
+/// wrapped once, by the node that ran it; anything else becomes `backend_error` with it under `upstream`.
+fn relayed_error(detail: Value) -> Value {
+    if matches!(
+        detail["error"]["type"].as_str(),
+        Some("granite_error" | "granite_backend_error")
+    ) {
+        detail
+    } else {
+        json!({"error":{"type":"granite_backend_error","code":"backend_error","message":"Native worker rejected request","upstream":detail}})
+    }
+}
+
 fn refused_before_running(upstream: &reqwest::Response) -> bool {
     let code = upstream
         .headers()
@@ -2224,12 +2433,7 @@ async fn forward_response(
         let detail = serde_json::from_slice::<Value>(&bytes).unwrap_or_else(
             |_| json!({"message":String::from_utf8_lossy(&bytes[..bytes.len().min(4096)])}),
         );
-        let body = if detail["error"]["type"] == "granite_error" {
-            detail
-        } else {
-            json!({"error":{"type":"granite_backend_error","code":"backend_error","message":"Native worker rejected request","upstream":detail}})
-        };
-        let mut response = (status, Json(body)).into_response();
+        let mut response = (status, Json(relayed_error(detail))).into_response();
         for name in [
             "x-granite-model-revision",
             "x-granite-backend",
@@ -2467,7 +2671,8 @@ fn normalize_chat(off_needs_t0: bool, value: &mut Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Watch, engine_chat_body, equal, normalize_chat, reasoning_usage, refused_before_running,
+        Media, Watch, check_chat_media, check_systemone_media, engine_chat_body, equal,
+        normalize_chat, reasoning_usage, refused_before_running, relayed_error,
     };
     use crate::lifecycle::failure;
     use axum::response::IntoResponse;
@@ -2513,6 +2718,23 @@ mod tests {
         assert!(!refused_before_running(&peer(503, None)));
         assert!(!refused_before_running(&peer(502, Some("backend_error"))));
         assert!(!refused_before_running(&peer(200, None)));
+    }
+
+    #[test]
+    fn backend_errors_are_wrapped_once() {
+        let refusal =
+            json!({"error":{"type":"granite_error","code":"invalid_schema","message":"m"}});
+        assert_eq!(relayed_error(refusal.clone()), refusal);
+        let bare = json!({"error":{"code":"unsupported_capability","message":"m"}});
+        let wrapped = relayed_error(bare.clone());
+        assert_eq!(wrapped["error"]["code"], "backend_error");
+        assert_eq!(wrapped["error"]["upstream"], bare);
+        // A peer's envelope is relayed as it is, not wrapped a second time.
+        assert_eq!(relayed_error(wrapped.clone()), wrapped);
+        assert_eq!(
+            relayed_error(json!({"message":"plain text"}))["error"]["code"],
+            "backend_error"
+        );
     }
 
     #[test]
@@ -2854,5 +3076,155 @@ mod tests {
         let mut out = watched(&mut watch, body, 5);
         out.push_str(std::str::from_utf8(&watch.end().2).unwrap());
         assert_eq!(out, body);
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    fn mp4() -> Vec<u8> {
+        let mut b = vec![0, 0, 0, 0x18];
+        b.extend_from_slice(b"ftypisom");
+        b.resize(64, 0);
+        b
+    }
+
+    fn chat(parts: serde_json::Value) -> serde_json::Value {
+        json!({"model":"m","messages":[{"role":"user","content":parts}]})
+    }
+
+    #[test]
+    fn audio_and_video_parts_carry_their_clip_inline() {
+        let video =
+            |inner: serde_json::Value| chat(json!([{"type":"input_video","input_video":inner}]));
+        let uri = format!("data:video/mp4;base64,{}", b64(&mp4()));
+        let mut ok = video(json!({ "data": uri }));
+        let media = check_chat_media(&mut ok).unwrap();
+        assert_eq!((media.images, media.audio, media.video), (0, 0, 1));
+        // The data: URI reaches llama-server as the bare base64 it reads.
+        assert_eq!(
+            ok["messages"][0]["content"][0]["input_video"]["data"],
+            b64(&mp4())
+        );
+        let webm = b64(&[0x1A, 0x45, 0xDF, 0xA3, 0, 0, 0, 0]);
+        assert!(check_chat_media(&mut video(json!({"data": webm, "format": "webm"}))).is_ok());
+
+        let refused = |mut body: serde_json::Value| check_chat_media(&mut body).unwrap_err();
+        for remote in [
+            "http://169.254.169.254/latest/meta-data",
+            "file:///etc/passwd",
+            "",
+        ] {
+            assert!(
+                !refused(video(json!({ "data": remote }))).is_empty(),
+                "{remote}"
+            );
+        }
+        assert!(
+            refused(video(json!({"url": "https://example.com/a.mp4"}))).contains("input_video.url")
+        );
+        let audio_url =
+            chat(json!([{"type":"input_audio","input_audio":{"url":"https://example.com/a.wav"}}]));
+        assert!(refused(audio_url).contains("input_audio.url"));
+        let mov = format!("data:video/quicktime;base64,{}", b64(&mp4()));
+        assert!(refused(video(json!({ "data": mov }))).contains("type must be"));
+        assert!(
+            refused(video(json!({"data": b64(b"plain text, not a video")})))
+                .contains("not a mp4 or webm")
+        );
+        let mut big = mp4();
+        big.resize(17 << 20, 0);
+        assert!(refused(video(json!({"data": b64(&big)}))).contains("exceeds 16 MiB"));
+        let part = json!({"type":"input_video","input_video":{"data": b64(&mp4())}});
+        assert!(refused(chat(json!([part.clone(), part.clone(), part]))).contains("at most 2"));
+
+        let audio = |data: String, format: &str| {
+            chat(json!([{"type":"input_audio","input_audio":{"data": data, "format": format}}]))
+        };
+        let mp3 = b64(b"ID3\x04\0\0\0\0\0\0");
+        assert_eq!(
+            check_chat_media(&mut audio(mp3.clone(), "mp3"))
+                .unwrap()
+                .audio,
+            1
+        );
+        assert!(refused(audio(mp3, "ogg")).contains("format must be"));
+        assert!(refused(audio(b64(&[0; 400]), "wav")).contains("not a wav, mp3 or flac file"));
+    }
+
+    #[test]
+    fn system_one_files_and_state_follow_the_chat_rules() {
+        let wav = {
+            let mut b = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+            b.resize(44, 0);
+            b
+        };
+        let png = format!("data:image/png;base64,{}", b64(&[0; 16]));
+        let audio = format!("data:audio/wav;base64,{}", b64(&wav));
+        let mut frame = json!({"model":"d","state":null,"files":[png.clone()]});
+        assert_eq!(check_systemone_media(&mut frame).unwrap().images, 1);
+        let mut clip = json!({"model":"d","state":null,"images":[audio.clone()]});
+        assert_eq!(check_systemone_media(&mut clip).unwrap().audio, 1);
+        for files in [json!([png, audio.clone()]), json!([audio.clone(), audio])] {
+            let mut both = json!({"model":"d","state":null,"files":files});
+            assert!(
+                check_systemone_media(&mut both)
+                    .unwrap_err()
+                    .contains("not both")
+            );
+        }
+        let mut remote = json!({"model":"d","state":null,"images":["https://example.com/a.png"]});
+        assert!(check_systemone_media(&mut remote).is_err());
+        let mut sound = json!({"model":"d","state":null,"files":["data:audio/ogg;base64,AAAA"]});
+        assert!(
+            check_systemone_media(&mut sound)
+                .unwrap_err()
+                .contains("type must be")
+        );
+        let clip = json!({"type":"input_video","input_video":{"data": b64(&mp4())}});
+        let mut state =
+            json!({"model":"d","state":{"messages":[{"role":"user","content":[clip]}]}});
+        assert_eq!(check_systemone_media(&mut state).unwrap().video, 1);
+        let mut json_state = json!({"model":"d","state":[1, "two", {"three": 3}]});
+        assert!(check_systemone_media(&mut json_state).is_ok());
+    }
+
+    #[test]
+    fn a_model_takes_only_the_media_it_declares() {
+        let model = |caps: serde_json::Value| -> crate::config::Model {
+            serde_json::from_value(
+                json!({"id":"m","hf_repo":"r","hf_revision":null,"family":"omni",
+                "capabilities":caps,"idle_timeout_seconds":300}),
+            )
+            .unwrap()
+        };
+        let text = model(json!(["chat"]));
+        let video = Media {
+            video: 1,
+            ..Media::default()
+        };
+        assert_eq!(video.missing(&text), Some("video"));
+        assert_eq!(
+            Media {
+                images: 1,
+                ..Media::default()
+            }
+            .missing(&text),
+            Some("vision")
+        );
+        assert_eq!(
+            Media {
+                audio: 1,
+                ..Media::default()
+            }
+            .missing(&text),
+            Some("audio")
+        );
+        assert_eq!(Media::default().missing(&text), None);
+        assert_eq!(
+            video.missing(&model(json!(["chat", "vision", "audio", "video"]))),
+            None
+        );
     }
 }

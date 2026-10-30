@@ -17,6 +17,11 @@ class Unsupported(ValueError):
     pass
 
 
+def refusal(code, message):
+    """A refusal the caller must fix; `granite_error` makes the gateway relay it as-is instead of as backend_error."""
+    return dict(error=dict(type='granite_error', code=code, message=message))
+
+
 class Native:
     def __init__(self, args):
         self.args = args
@@ -336,7 +341,7 @@ def serve(native, args):
             elif self.path == '/v1/models':
                 self.send(200, dict(object='list', data=[dict(id=args.model, object='model', revision=args.revision)]))
             else:
-                self.send(404, dict(error=dict(code='route_not_found', message=self.path)))
+                self.send(404, refusal('route_not_found', self.path))
 
         def do_POST(self):
             try:
@@ -346,9 +351,9 @@ def serve(native, args):
                 data = json.loads(self.rfile.read(length))
                 self.send(200, native.infer(self.path, data))
             except Unsupported as e:
-                self.send(501, dict(error=dict(code='unsupported_capability', message=str(e))))
+                self.send(501, refusal('unsupported_capability', str(e)))
             except (ValueError, KeyError, TypeError) as e:
-                self.send(400, dict(error=dict(code='invalid_schema', message=str(e))))
+                self.send(400, refusal('invalid_schema', str(e)))
             except Exception as e:
                 oom = 'out of memory' in str(e).lower()
                 self.send(503 if oom else 500, dict(error=dict(code='out_of_memory' if oom else 'inference_failed', message=f'{type(e).__name__}: {e}')))

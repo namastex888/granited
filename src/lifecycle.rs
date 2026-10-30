@@ -863,7 +863,8 @@ impl Service {
         Ok(())
     }
 
-    async fn stop_worker(&self, worker: &Worker) -> Result<()> {
+    /// Unloads `worker`. `next` is the deployment this unload makes room for, if any.
+    async fn stop_worker(&self, worker: &Worker, next: Option<&Worker>) -> Result<()> {
         if worker.spec.external && !worker.spec.external_lifecycle {
             return Err(failure(
                 "lifecycle_forbidden",
@@ -883,6 +884,20 @@ impl Service {
             if worker.spec.external || worker.process.lock().unwrap().is_some() {
                 self.native_model_action(worker, "unload").await?;
             }
+            // A router stays up between loads, and with it the deployment's `slot_lock`. One that
+            // holds a lock exits with its last model, so the lock is free while nothing is loaded.
+            if worker.spec.slot_lock.is_some()
+                && !worker.spec.external
+                && !self.router_serves_another(worker, next)
+            {
+                let child = worker.process.lock().unwrap().take();
+                if let Some(mut child) = child {
+                    child
+                        .terminate()
+                        .await
+                        .map_err(|e| failure("unload_failed", e.to_string()))?;
+                }
+            }
         } else {
             let child = worker.process.lock().unwrap().take();
             if let Some(mut child) = child {
@@ -897,6 +912,18 @@ impl Service {
         rt.unloaded_ms = Some(start.elapsed().as_millis());
         rt.context_tokens = None;
         Ok(())
+    }
+
+    /// Whether another deployment on this worker's router is loading, loaded, or `next`, the one
+    /// about to load: a swap inside the router keeps it, and its slot lock, up.
+    fn router_serves_another(&self, worker: &Worker, next: Option<&Worker>) -> bool {
+        next.is_some_and(|n| {
+            n.spec.base_url == worker.spec.base_url && n.spec.model != worker.spec.model
+        }) || self.workers.values().any(|w| {
+            w.spec.base_url == worker.spec.base_url
+                && w.spec.model != worker.spec.model
+                && matches!(w.runtime.lock().unwrap().state, "loading" | "ready")
+        })
     }
 
     async fn load_worker(&self, worker: &Worker, mode: LoadMode) -> Result<()> {
@@ -1015,7 +1042,7 @@ impl Service {
                 .collect();
             idle.sort_by_key(|w| w.runtime.lock().unwrap().last_used);
             for candidate in idle {
-                self.stop_worker(&candidate).await?;
+                self.stop_worker(&candidate, Some(worker)).await?;
                 self.refresh_hardware(true).await;
                 if self.room(worker).await.is_ok() {
                     break;
@@ -1373,7 +1400,7 @@ impl Service {
                 };
                 match op.action.as_str() {
                     "load" => service.load_worker(&worker, LoadMode::Normal).await,
-                    "unload" => service.stop_worker(&worker).await,
+                    "unload" => service.stop_worker(&worker, None).await,
                     "prefetch" => {
                         if worker.spec.prefetch_command.is_empty() {
                             return Err(failure(
@@ -1416,7 +1443,7 @@ impl Service {
                 && worker.spec.backend == "llama_cpp"
             {
                 let _guard = service.lifecycle.lock().await;
-                if let Err(error) = service.stop_worker(&worker).await {
+                if let Err(error) = service.stop_worker(&worker, None).await {
                     tracing::error!(model=worker.spec.model,error=?error,"native load cancellation cleanup failed");
                 }
             }
@@ -1462,7 +1489,7 @@ impl Service {
             };
             if idle
                 && worker.active.load(Ordering::SeqCst) == 0
-                && let Err(err) = self.stop_worker(worker).await
+                && let Err(err) = self.stop_worker(worker, None).await
             {
                 tracing::warn!(model=id, error=?err, "idle eviction failed");
             }
@@ -1475,7 +1502,7 @@ impl Service {
             if worker.spec.external {
                 continue;
             }
-            if let Err(err) = self.stop_worker(worker).await {
+            if let Err(err) = self.stop_worker(worker, None).await {
                 tracing::error!(error=?err,"shutdown worker cleanup");
             }
             let child = worker.process.lock().unwrap().take();
