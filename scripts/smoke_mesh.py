@@ -7,6 +7,7 @@ B is warmed first, so A and C rank warm B above their own cold workers. B is the
 unreachable, puts it in backoff and is served by the next host. No quorum is involved: each node
 places requests on its own, so any one survivor keeps serving.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -129,6 +130,118 @@ def external_engine_ready_at_first_request(binary):
             mock.wait(timeout=10)
 
 
+MANAGED_ROUTER = """
+import http.server, json, sys
+port = int(sys.argv[1])
+state = {m: 'unloaded' for m in sys.argv[2:]}
+class H(http.server.BaseHTTPRequestHandler):
+    def reply(self, body):
+        data = json.dumps(body).encode()
+        self.send_response(200); self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
+    def do_GET(self):
+        if self.path.startswith('/v1/models'):
+            return self.reply({'data': [{'id': m, 'status': {'value': v, 'args': ['--port', str(port)] if v == 'loaded' else []}}
+                                        for m, v in state.items()]})
+        if self.path.startswith('/props'):
+            return self.reply({'default_generation_settings': {'n_ctx': 4096}, 'total_slots': 1, 'build_info': 'mock'})
+        self.reply({'status': 'ok'})
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+        if self.path in ('/models/load', '/models/unload'):
+            state[body['model']] = 'loaded' if self.path == '/models/load' else 'unloaded'
+            return self.reply({'success': True})
+        self.reply({'object': 'chat.completion', 'model': body.get('model'), 'choices': [{'index': 0, 'finish_reason': 'stop',
+                    'message': {'role': 'assistant', 'content': 'hi'}}], 'usage': {'prompt_tokens': 3, 'completion_tokens': 1, 'total_tokens': 4}})
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(('127.0.0.1', port), H).serve_forever()
+"""
+
+
+def slot_locked_router_exits_with_its_last_model(binary):
+    """A managed llama router whose deployments name a slot_lock exits when its last model unloads,
+    so the lock is free while nothing is loaded; while another model on it is loaded, it stays."""
+    import fcntl
+    checks = []
+    with tempfile.TemporaryDirectory() as state:
+        engine, port = free_port(), free_port()
+        path, _ = profile(state, 'slot', port, 0, [])
+        config = json.loads(path.read_text())
+        registry = {m['id']: m for m in json.loads((ROOT / 'configs/registry.json').read_text())['models']}
+        artifact = Path(state) / 'weights.gguf'
+        artifact.write_bytes(b'stub')
+        lock = Path(state) / 'gpu-slot.lock'
+        models = ['granite-4.2-3b', 'granite-4.2-8b']
+        command = [sys.executable, '-c', MANAGED_ROUTER, str(engine)] + [m + '-Q4' for m in models]
+        config['deployments'] = [dict(model=m, backend='llama_cpp', base_url=f'http://127.0.0.1:{engine}',
+                                      revision=registry[m]['hf_revision'], artifact_repo='stub', command=command,
+                                      backend_model=m + '-Q4', memory_bytes=64 << 20, device='unified', health_path='/health',
+                                      identity_path='/v1/models', runtime_manifest='scripts/smoke_mesh.py', backend_build='mock',
+                                      context_tokens=4096, max_concurrency=1, load_timeout_seconds=30, slot_lock=str(lock),
+                                      artifacts={str(artifact): hashlib.sha256(b'stub').hexdigest()})
+                                 for m in models]
+        path.write_text(json.dumps(config))
+
+        def lock_free():
+            with open(lock, 'a') as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return True
+                except OSError:
+                    return False
+
+        def chat(model):
+            status, _, raw = call(port, '/v1/chat/completions', {'model': model, 'reasoning_effort': 'off', 'temperature': 0,
+                                                                 'max_tokens': 4, 'messages': [{'role': 'user', 'content': 'hi'}]})
+            if status != 200:
+                print('   ', model, status, raw[:300])
+            return status
+
+        def unload(model):
+            op = json.loads(call(port, f'/admin/models/{model}/unload', {}, key=ADMIN)[2])
+            for _ in range(200):
+                status = json.loads(call(port, f"/admin/operations/{op['id']}", key=ADMIN)[2])['status']
+                if status != 'running':
+                    return status
+                time.sleep(0.1)
+
+        def engine_up():
+            try:
+                socket.create_connection(('127.0.0.1', engine), 0.2).close()
+                return True
+            except OSError:
+                return False
+
+        def engine_pid():
+            out = subprocess.run(['lsof', '-nP', f'-iTCP:{engine}', '-sTCP:LISTEN', '-t'], capture_output=True, text=True).stdout
+            return out.split()[0] if out.split() else None
+
+        env = dict(os.environ, GRANITE_API_KEY=API, GRANITE_ADMIN_KEY=ADMIN)
+        router = subprocess.Popen([str(binary), 'serve', str(path)], cwd=ROOT, env=env, start_new_session=True,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            wait_up(port)
+            served = [chat(models[0])]
+            before = engine_pid()
+            served.append(chat(models[1]))
+            print('   slot-locked router, both models:', served)
+            checks.append(('a swap between two models on one slot-locked router keeps the same router and the lock',
+                           served == [200, 200] and before is not None and engine_pid() == before and not lock_free()))
+            first = unload(models[0])
+            checks.append(('unloading a model while another is loaded keeps the router and the lock', first == 'succeeded'
+                           and engine_up() and not lock_free()))
+            last = unload(models[1])
+            time.sleep(0.5)
+            checks.append(('unloading the last model stops the router and frees the slot lock', last == 'succeeded'
+                           and not engine_up() and lock_free()))
+            checks.append(('the next request starts the router again and takes the lock', chat(models[0]) == 200
+                           and engine_up() and not lock_free()))
+        finally:
+            os.killpg(router.pid, signal.SIGTERM)
+            router.wait(timeout=20)
+    return checks
+
+
 def main():
     binary = ROOT / 'target/debug/granited'
     ports = {n: free_port() for n in 'abc'}
@@ -221,6 +334,7 @@ def main():
                     router.wait(timeout=20)
     checks += foreign_process_is_never_stopped(binary)
     checks += external_engine_ready_at_first_request(binary)
+    checks += slot_locked_router_exits_with_its_last_model(binary)
     for name, ok in checks:
         print(('PASS ' if ok else 'FAIL ') + name)
     sys.exit(0 if checks and all(ok for _, ok in checks) else 1)

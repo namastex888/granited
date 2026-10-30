@@ -306,6 +306,11 @@ def main():
         check('more than 4 audio parts in one request are refused', status == 400 and 'at most 4' in body['error']['message'])
         status, _, body, _, _ = r.chat(content=[audio('mp3')])
         check('audio other than wav is refused', status == 400 and body['error']['code'] == 'invalid_schema')
+        mp4 = base64.b64encode(b'\0\0\0\x18ftypisom' + bytes(48)).decode()
+        status, _, body, _, _ = r.chat(content=[{'type': 'input_video', 'input_video': {'data': mp4}}])
+        check('video has no auto route: refused, name a model', status == 400 and body['error']['code'] == 'unsupported_auto')
+        status, _, body, _, _ = r.chat(model=B8, content=[{'type': 'input_video', 'input_video': {'data': mp4}}])
+        check('video to a model that does not declare it is refused', status == 400 and 'does not declare video' in body['error']['message'])
     finally:
         r.close()
 

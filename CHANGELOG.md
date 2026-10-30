@@ -4,6 +4,7 @@
 
 ### Breaking
 
+- **Native workers' refusals reach the client as they are.** A request that `workers/native.py` refuses (embeddings, forecasting, speech recognition) gets the worker's status and code at the top level: 400 `invalid_schema`, 501 `unsupported_capability` or 404 `route_not_found`, with `type` `granite_error`. Before, the gateway wrapped them as `backend_error` with the worker's error under `upstream`. Worker failures (5xx) are still `backend_error`. A request forwarded to a peer is wrapped once, by the node that ran it; before, the entry node wrapped the peer's `backend_error` a second time. A peer that still runs the old worker answers with one `backend_error` until its `native.py` is updated.
 - **Qwen3-TTS requests must carry a reference** (inline `references` or a stored `voice`) and at most 1000 input characters. The gateway now refuses them with 400 `invalid_schema` before admission; before, they reached the worker and failed there. The limits come from the registry (`references_required`, `max_input_chars`).
 - **Chat content parts are allowlisted** on every `/v1/chat/completions` request, including requests that name a model. The accepted types are `text`, `image_url`, `input_audio` and `refusal`. Any other type, or a part without a type, gets 400 `invalid_schema`, with the message `content part type ... is not accepted`.
 - **Message `content` must be a string, an array of parts, or null** on every chat request, including requests that name a model. Anything else gets 400 `invalid_schema` with the message `message content must be a string or an array of parts`.
@@ -13,6 +14,7 @@
 
 ### Fixed
 
+- A llama.cpp router whose deployments name a `slot_lock` now exits when its last model unloads, so the lock is free while nothing is loaded. Before, the router stayed up between loads and kept the lock until the manager stopped, so a second deployment on the same lock (the Mac's Qwen3-TTS) got 503 `accelerator_busy`. A swap between two models on one router keeps the router and the lock. Routers without a `slot_lock` are unchanged. `scripts/smoke_mesh.py` covers both cases.
 - Usage counters no longer list forecast, retrieval, transcription, speech and the other tokenless capabilities as requests "without usage". Their replies carry no tokens by design, so they count as completed jobs. Only chat, vision, adapters and embeddings replies that omit usage are counted as without usage, so `usage_reported` and the app's note now flag only real gaps.
 - The first requests after a manager restart no longer get `capacity_unavailable` for models on an operator-owned router. The manager now reads those routers once before it listens; before, it listened while that first read was still pending.
 - A manager killed outright (crash, OOM, SIGKILL) no longer leaves its node unable to serve: its orphaned workers held their ports, and the restarted manager refused them with `worker_port_in_use`. It now reaps exactly the workers its own ledger names. `scripts/smoke_mesh.py` covers a 3-node mesh in which one node dies and rejoins.

@@ -988,6 +988,87 @@
         "precision": "float32 on CPU, bfloat16 on GPUs; never float16"
       },
       "note": "Google DeepMind, released 2026-10-06 under Apache-2.0; use must follow the Gemma Prohibited Use Policy. One 768-d space for text, images, audio and video. Not an auto preference: Granite stays the default embedding model; this one serves by name."
+    },
+    {
+      "id": "d1-omni-600m",
+      "hf_repo": "LiquidAI/d1-omni-600M-GGUF",
+      "family": "decision",
+      "capabilities": [
+        "adapters",
+        "vision",
+        "audio"
+      ],
+      "hf_revision": "8eb2d2a1c5404bba8a34a88bd8e159c242197d51",
+      "architecture": [
+        "lfm2-d1-omni"
+      ],
+      "license": "lfm1.0",
+      "context_limit": 16384,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "llama_cpp"
+      ],
+      "validation": {
+        "model_card_checked": true,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true,
+        "performance_smoke_measured": false
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/d1-omni-600m/8eb2d2a1c5404bba8a34a88bd8e159c242197d51",
+      "aliases": [
+        "LiquidAI/d1-omni-600M-GGUF"
+      ],
+      "quality_benchmarked": false,
+      "requirements": {
+        "input": "/v1/systemone only: a state (may be null) with images or one audio clip of up to 30 s, never both in one request; files as data: URIs (image png/jpeg/webp, audio wav/mp3/flac)",
+        "output": "typed answers: choice, score or noul, with probabilities summing to 1"
+      },
+      "note": "Liquid AI d1-omni (LFM Open License). Audio was trained on English-speaker requests: Portuguese speech is unmeasured until a reference set exists. llama-server reads images or one audio clip per request, not both; the gateway refuses the mix. The whole prompt is one batch (ub 4096), cut at 16384 tokens."
+    },
+    {
+      "id": "lfm3-omni-2b",
+      "hf_repo": "ggml-org/LFM3-Omni-2B-GGUF",
+      "family": "omni",
+      "capabilities": [
+        "chat",
+        "vision",
+        "audio",
+        "video"
+      ],
+      "hf_revision": "01d0877a0e1f9483ea694c4437ab145332f46846",
+      "architecture": [
+        "lfm3"
+      ],
+      "license": "lfm1.0",
+      "context_limit": 32768,
+      "processor": null,
+      "memory_bytes": null,
+      "idle_timeout_seconds": 300,
+      "runtime_candidates": [
+        "llama_cpp"
+      ],
+      "validation": {
+        "model_card_checked": true,
+        "backend_smoke_test_passed": false,
+        "benchmarked": false,
+        "card_fetched": true,
+        "performance_smoke_measured": false
+      },
+      "incompatibilities": [],
+      "card_path": "reports/model-cards/lfm3-omni-2b/01d0877a0e1f9483ea694c4437ab145332f46846",
+      "aliases": [
+        "ggml-org/LFM3-Omni-2B-GGUF"
+      ],
+      "quality_benchmarked": false,
+      "requirements": {
+        "input": "chat with text, image_url, input_audio (wav/mp3/flac) and input_video (mp4/webm, soundtrack included) parts; media inline as data only, never url",
+        "video": "sampled at 2 fps (card: 4 to 384 frames), text timestamps every 5 s; decoded by Homebrew ffmpeg (AV1 through libdav1d)"
+      },
+      "note": "Liquid AI LFM3-Omni, GGUF by ggml-org. Needs llama.cpp b11941 (video soundtrack b11960), so it runs on its own b11960 llama-server, not Homebrew's b11669. Portuguese is listed for text and speech; nothing is measured yet. 32K context is the card maximum until tokens per second of video are measured."
     }
   ]
 }
